@@ -1,0 +1,54 @@
+patient1@example.com: Hi, I need a caregiver in Alexandria
+patient1@example.com: I need help with daily activities and medication management
+patient1@example.com: I can pay up to $30/hour
+patient1@example.com: Monday through Friday, mornings
+
+patient2@example.com: Looking for care in Fairfax
+patient2@example.com: Need assistance with physical therapy and mobility
+patient2@example.com: Budget is $35 per hour
+patient2@example.com: Weekends only
+
+caregiver1@example.com: I'd like to register as a caregiver
+caregiver1@example.com: I have 5 years experience in elderly care and I'm CPR certified
+caregiver1@example.com: I'm in Alexandria and available Monday-Friday
+caregiver1@example.com: My rate is $25/hour
+caregiver1@example.com: I specialize in medication management and daily assistance
+
+caregiver2@example.com: Hi, I want to offer my caregiving services
+caregiver2@example.com: I'm a certified nursing assistant with 3 years experience
+caregiver2@example.com: Located in Fairfax, available weekends
+caregiver2@example.com: Looking for $30/hour
+caregiver2@example.com: Specialized in physical therapy and post-surgery care
+
+patient3@example.com: Need caregiver in McLean
+patient3@example.com: Looking for post-surgery care
+patient3@example.com: Can pay $40/hour
+patient3@example.com: Need evening care
+
+caregiver3@example.com: Registering as a caregiver
+caregiver3@example.com: RN with 8 years experience in McLean
+caregiver3@example.com: Available evenings and nights
+caregiver3@example.com: Rate $35/hour
+caregiver3@example.com: Specialized in post-surgery and wound care
+
+patient4@example.com: Seeking care in Arlington
+patient4@example.com: Need dementia care support
+patient4@example.com: Budget $45/hour
+patient4@example.com: Full-time care needed
+
+caregiver4@example.com: Want to provide care services
+caregiver4@example.com: 6 years experience with dementia patients
+caregiver4@example.com: Based in Arlington, available full-time
+caregiver4@example.com: Charging $40/hour
+caregiver4@example.com: Certified in dementia care
+
+patient5@example.com: Need caregiver in Reston
+patient5@example.com: Companionship and light housekeeping
+patient5@example.com: Can afford $25/hour
+patient5@example.com: Part-time, afternoons
+
+caregiver5@example.com: Looking to provide care services
+caregiver5@example.com: 2 years experience in senior care
+caregiver5@example.com: Located in Reston, flexible schedule
+caregiver5@example.com: Rate $22/hour
+caregiver5@example.com: Focus on companionship and daily assistance

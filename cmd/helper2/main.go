@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -8,9 +9,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
-	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chaisql/chai"
@@ -80,11 +83,11 @@ type UserContext struct {
 }
 
 type App struct {
-	db          *chai.DB
-	messages    []Message
-	apiKey      string
-	userContext UserContext
-	maxHistory  int
+	db           *chai.DB
+	userSessions map[string][]Message // Map of email -> messages
+	apiKey       string
+	maxHistory   int
+	mu           sync.RWMutex // Mutex for thread-safe access
 }
 
 var (
@@ -142,12 +145,6 @@ const (
             border: 1px solid #ddd;
             border-radius: 4px;
         }
-        .recipient-input {
-            width: 200px;
-            padding: 8px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-        }
         .send-button {
             padding: 8px 16px;
             background-color: #4CAF50;
@@ -177,12 +174,12 @@ const (
         <div id="messages">
             {{range .Messages}}
             <div class="message {{.Role}}">
-                <strong>{{.Role}}:</strong> {{.Content}}
+                <strong>{{.Role}}:</strong> {{.Content | html}}
             </div>
             {{end}}
         </div>
         <form method="POST" action="/chat" class="message-form">
-            <input type="email" name="recipient" placeholder="Recipient's email (optional)" class="recipient-input">
+            <input type="hidden" name="email" value="{{.UserEmail}}">
             <input type="text" name="message" placeholder="Type your message..." class="message-input" required>
             <button type="submit" class="send-button">Send</button>
         </form>
@@ -196,13 +193,12 @@ const (
 
 const systemPrompt = `You are a matchmaking assistant helping to connect caregivers with patients. 
 
-IMPORTANT: Before collecting any other information, you must first get the user's email address.
-If you don't have their email, ask for it before proceeding with any other questions.
+When a user connects, their email is already provided in the URL or form data. Use this email as their identifier 
+and DO NOT ask for it again. You can see it in their messages history.
 
-After getting the email, collect and store information using store_caregiver or store_patient functions.
+For new users, first determine if they are a caregiver or patient by asking about their role.
 
 Required information for caregivers:
-- Email (MUST BE COLLECTED FIRST)
 - Experience and certifications
 - Location
 - Availability
@@ -210,16 +206,17 @@ Required information for caregivers:
 - Rate expectations (hourly rate in dollars)
 
 Required information for patients:
-- Email (MUST BE COLLECTED FIRST)
 - Care needs
 - Location
 - Schedule requirements
 - Budget (hourly rate in dollars)
 - Special requirements
 
-Always verify you have the email before storing any other information.
-We need to interrogate the user to get all of these fields, so that we do not
-have odd blanks throughout the application.
+Once you have collected all required information:
+- For caregivers: Confirm their registration and offer to show matching patients
+- For patients: Show them matching caregivers immediately
+
+Always maintain context from previous messages to avoid asking for information that was already provided.
 `
 
 // Add these new types and methods
@@ -424,7 +421,7 @@ func NewApp(apiKey string) (*App, error) {
 		return nil, fmt.Errorf("failed to open database: %v", err)
 	}
 
-	// Update schema without IF NOT EXISTS for indexes and IF EXISTS for ALTER
+	// Update schema with IF NOT EXISTS for indexes
 	err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS caregivers (
 			email TEXT PRIMARY KEY,
@@ -436,7 +433,7 @@ func NewApp(apiKey string) (*App, error) {
 			certifications TEXT,
 			created_at TIMESTAMP
 		);
-		CREATE INDEX idx_caregivers_email ON caregivers(email);
+		CREATE INDEX IF NOT EXISTS idx_caregivers_email ON caregivers(email);
 
 		CREATE TABLE IF NOT EXISTS patients (
 			email TEXT PRIMARY KEY,
@@ -447,7 +444,7 @@ func NewApp(apiKey string) (*App, error) {
 			special_requirements TEXT,
 			created_at TIMESTAMP
 		);
-		CREATE INDEX idx_patients_email ON patients(email);
+		CREATE INDEX IF NOT EXISTS idx_patients_email ON patients(email);
 
 		CREATE TABLE IF NOT EXISTS matches (
 			caregiver_email TEXT,
@@ -456,8 +453,8 @@ func NewApp(apiKey string) (*App, error) {
 			created_at TIMESTAMP,
 			PRIMARY KEY (caregiver_email, patient_email)
 		);
-		CREATE INDEX idx_matches_caregiver_email ON matches(caregiver_email);
-		CREATE INDEX idx_matches_patient_email ON matches(patient_email);
+		CREATE INDEX IF NOT EXISTS idx_matches_caregiver_email ON matches(caregiver_email);
+		CREATE INDEX IF NOT EXISTS idx_matches_patient_email ON matches(patient_email);
 
 		CREATE TABLE IF NOT EXISTS chat_history (
 			email TEXT,
@@ -467,7 +464,7 @@ func NewApp(apiKey string) (*App, error) {
 			recipient TEXT,
 			PRIMARY KEY (email, created_at)
 		);
-		CREATE INDEX idx_chat_history_email ON chat_history(email);
+		CREATE INDEX IF NOT EXISTS idx_chat_history_email ON chat_history(email);
 
 		CREATE TABLE IF NOT EXISTS skills (
 			email TEXT,
@@ -475,18 +472,17 @@ func NewApp(apiKey string) (*App, error) {
 			created_at TIMESTAMP,
 			PRIMARY KEY (email, skill)
 		);
-		CREATE INDEX idx_skills_email ON skills(email)
+		CREATE INDEX IF NOT EXISTS idx_skills_email ON skills(email)
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create schema: %v", err)
 	}
 
 	return &App{
-		db:          db,
-		messages:    make([]Message, 0),
-		apiKey:      apiKey,
-		userContext: UserContext{},
-		maxHistory:  100,
+		db:           db,
+		userSessions: make(map[string][]Message),
+		apiKey:       apiKey,
+		maxHistory:   100,
 	}, nil
 }
 
@@ -497,37 +493,47 @@ func (app *App) Close() error {
 // Database operations
 func (app *App) StoreCaregiver(c *Caregiver) error {
 	c.CreatedAt = time.Now()
-	err := app.db.Exec(`
+
+	// Check if caregiver exists
+	result, err := app.db.Query("SELECT email FROM caregivers WHERE email = ?", c.Email)
+	if err != nil {
+		return fmt.Errorf("failed to check caregiver existence: %v", err)
+	}
+	defer result.Close()
+
+	exists := false
+	err = result.Iterate(func(r *chai.Row) error {
+		exists = true
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to iterate results: %v", err)
+	}
+
+	if exists {
+		// Update existing caregiver
+		return app.db.Exec(`
+			UPDATE caregivers 
+			SET experience = ?,
+				location = ?,
+				availability = ?,
+				specializations = ?,
+				rate_expectations = ?,
+				certifications = ?
+			WHERE email = ?
+		`, c.Experience, c.Location, c.Availability,
+			c.Specializations, c.RateExpectations, c.Certifications,
+			c.Email)
+	}
+
+	// Insert new caregiver
+	return app.db.Exec(`
 		INSERT INTO caregivers (
 			email, experience, location, availability, 
 			specializations, rate_expectations, certifications, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT (email) DO UPDATE SET
-			experience = ?,
-			location = ?,
-			availability = ?,
-			specializations = ?,
-			rate_expectations = ?,
-			certifications = ?
-	`,
-		c.Email, c.Experience, c.Location, c.Availability,
-		c.Specializations, c.RateExpectations, c.Certifications, c.CreatedAt.Format(time.RFC3339),
-		c.Experience, c.Location, c.Availability,
-		c.Specializations, c.RateExpectations, c.Certifications)
-
-	if err != nil {
-		return fmt.Errorf("failed to store caregiver: %v", err)
-	}
-
-	// Store skills separately
-	skills := []string{"cook", "clean", "transport", "drive"}
-	for _, skill := range skills {
-		if err := app.AddSkill(c.Email, skill); err != nil {
-			return fmt.Errorf("failed to store skill %s: %v", skill, err)
-		}
-	}
-
-	return nil
+	`, c.Email, c.Experience, c.Location, c.Availability,
+		c.Specializations, c.RateExpectations, c.Certifications, c.CreatedAt)
 }
 
 func (app *App) StorePatient(p *Patient) error {
@@ -551,6 +557,86 @@ func (app *App) CreateMatch(m *Match) error {
 
 func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 	functionDefs := []map[string]interface{}{
+		{
+			"name":        "store_caregiver",
+			"description": "Store a new caregiver's information in the system",
+			"parameters": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"email": map[string]interface{}{
+						"type":        "string",
+						"description": "Caregiver's email address",
+					},
+					"experience": map[string]interface{}{
+						"type":        "string",
+						"description": "Years of experience and certifications",
+					},
+					"location": map[string]interface{}{
+						"type":        "string",
+						"description": "Caregiver's location",
+					},
+					"availability": map[string]interface{}{
+						"type":        "string",
+						"description": "Availability schedule",
+					},
+					"specializations": map[string]interface{}{
+						"type":        "string",
+						"description": "Areas of specialization",
+					},
+					"rate_expectations": map[string]interface{}{
+						"type":        "number",
+						"description": "Hourly rate in dollars",
+					},
+					"certifications": map[string]interface{}{
+						"type":        "string",
+						"description": "Professional certifications",
+					},
+				},
+				"required": []string{"email", "location", "rate_expectations"},
+			},
+		},
+		{
+			"name":        "store_patient",
+			"description": "Store a new patient's information in the system",
+			"parameters": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"email": map[string]interface{}{
+						"type":        "string",
+						"description": "Patient's email address",
+					},
+					"care_needs": map[string]interface{}{
+						"type":        "string",
+						"description": "Description of care needs",
+					},
+					"location": map[string]interface{}{
+						"type":        "string",
+						"description": "Patient's location",
+					},
+					"schedule_requirements": map[string]interface{}{
+						"type":        "string",
+						"description": "Schedule requirements",
+					},
+					"budget": map[string]interface{}{
+						"type":        "number",
+						"description": "Hourly budget in dollars",
+					},
+					"special_requirements": map[string]interface{}{
+						"type":        "string",
+						"description": "Any special requirements",
+					},
+				},
+				"required": []string{"email", "care_needs", "location"},
+			},
+		},
+		{
+			"name":        "list_patients",
+			"description": "List all registered patients in the system",
+			"parameters": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
 		{
 			"name":        "list_caregivers",
 			"description": "List all registered caregivers in the system",
@@ -654,44 +740,34 @@ type TemplateData struct {
 
 // Update handleChat function to include user email
 func handleChat(w http.ResponseWriter, r *http.Request) {
+	userEmail := r.URL.Query().Get("email")
+	if userEmail == "" {
+		userEmail = r.FormValue("email")
+	}
+
 	if r.Method == "POST" {
 		message := r.FormValue("message")
-		recipient := r.FormValue("recipient")
-
 		if message == "" {
 			http.Error(w, "Message cannot be empty", http.StatusBadRequest)
 			return
 		}
 
-		// Add message to chat with recipient
-		if err := chatRoom.AddMessageWithRecipient("user", message, recipient); err != nil {
+		log.Printf("Processing message from %s: %s", userEmail, message)
+
+		// Add user's message to chat history
+		if err := chatRoom.AddMessageWithRecipient(userEmail, "user", message, "admin"); err != nil {
 			log.Printf("Error adding message: %v", err)
 			http.Error(w, "Failed to add message", http.StatusInternalServerError)
 			return
 		}
 
-		// Check if this message contains an email address
-		if chatRoom.userContext.Email == "" {
-			emailRegex := regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
-			if email := emailRegex.FindString(message); email != "" {
-				chatRoom.userContext.Email = email
-				if err := chatRoom.AddMessageWithRecipient("assistant", fmt.Sprintf("Thank you, %s! I'll remember your email address. How can I help you today?", email), "admin"); err != nil {
-					log.Printf("Error adding assistant message: %v", err)
-				}
-				http.Redirect(w, r, "/", http.StatusSeeOther)
-				return
-			}
-		}
-
-		// Prepare messages with system prompt
+		// Get chat history for OpenAI
 		messages := []Message{
-			{
-				Role:    "system",
-				Content: systemPrompt,
-			},
+			{Role: "system", Content: systemPrompt},
 		}
-		messages = append(messages, chatRoom.messages...)
+		messages = append(messages, chatRoom.GetUserMessages(userEmail)...)
 
+		// Call OpenAI
 		chatReq := ChatRequest{
 			Model:    "gpt-3.5-turbo",
 			Messages: messages,
@@ -700,90 +776,102 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		chatResp, err := callOpenAI(chatReq)
 		if err != nil {
 			log.Printf("Error calling OpenAI: %v", err)
-			http.Error(w, "Failed to call OpenAI", http.StatusInternalServerError)
+			http.Error(w, "Failed to process message", http.StatusInternalServerError)
 			return
 		}
 
-		// Handle function calls
-		if len(chatResp.Choices) > 0 && chatResp.Choices[0].Message.FunctionCall != nil {
-			fc := chatResp.Choices[0].Message.FunctionCall
-			args, err := fc.GetArguments()
-			if err != nil {
-				log.Printf("Error parsing function arguments: %v", err)
-				http.Error(w, "Failed to parse function arguments", http.StatusInternalServerError)
-				return
-			}
-
-			log.Printf("\nFunction call received - Name: %s", fc.Name)
-			log.Printf("Arguments: %v", args)
-
-			switch fc.Name {
-			case "list_caregivers":
-				caregivers, err := chatRoom.ListCaregivers()
+		// Process OpenAI response
+		if len(chatResp.Choices) > 0 {
+			choice := chatResp.Choices[0].Message
+			if choice.FunctionCall != nil {
+				args, err := choice.FunctionCall.GetArguments()
 				if err != nil {
-					log.Printf("Error listing caregivers: %v", err)
-				} else {
-					response := "Here are the registered caregivers:\n"
-					for _, c := range caregivers {
-						response += fmt.Sprintf("\nEmail: %s\nLocation: %s\nAvailability: %s\nSpecializations: %s\nRate: $%.2f/hr\n",
-							c.Email, c.Location, c.Availability, c.Specializations, c.RateExpectations)
-					}
-					if err := chatRoom.AddMessageWithRecipient("assistant", response, "admin"); err != nil {
-						log.Printf("Error adding assistant message: %v", err)
-					}
-				}
-			case "find_matching_caregivers":
-				patientEmail, ok := args["patient_email"].(string)
-				if !ok {
-					log.Printf("Error: patient_email not found in arguments")
+					log.Printf("Error parsing function arguments: %v", err)
+					http.Error(w, "Failed to process function call", http.StatusInternalServerError)
 					return
 				}
 
-				matches, err := chatRoom.FindMatchingCaregivers(patientEmail)
-				if err != nil {
-					log.Printf("Error finding matches: %v", err)
-					response := "I'm sorry, I couldn't find any matching caregivers at this time."
-					if err := chatRoom.AddMessageWithRecipient("assistant", response, "admin"); err != nil {
-						log.Printf("Error adding assistant message: %v", err)
+				var response string
+				switch choice.FunctionCall.Name {
+				case "list_patients":
+					patients, err := chatRoom.ListPatients()
+					if err != nil {
+						response = fmt.Sprintf("Error listing patients: %v", err)
+					} else {
+						response = formatPatientList(patients)
 					}
-					return
+
+				case "list_caregivers":
+					caregivers, err := chatRoom.ListCaregivers()
+					if err != nil {
+						response = fmt.Sprintf("Error listing caregivers: %v", err)
+					} else {
+						response = formatCaregiverList(caregivers)
+					}
+
+				case "find_matching_caregivers":
+					patientEmail := getStringArg(args, "patient_email", userEmail) // Use current user's email if not specified
+					caregivers, err := chatRoom.FindMatchingCaregivers(patientEmail)
+					if err != nil {
+						response = fmt.Sprintf("Error finding matches: %v", err)
+					} else {
+						response = formatCaregiverList(caregivers)
+					}
+
+				case "store_caregiver":
+					caregiver := &Caregiver{
+						Email:            getStringArg(args, "email", ""),
+						Experience:       getStringArg(args, "experience", ""),
+						Location:         getStringArg(args, "location", ""),
+						Availability:     getStringArg(args, "availability", ""),
+						Specializations:  getStringArg(args, "specializations", ""),
+						RateExpectations: getFloatArg(args, "rate_expectations", 0),
+						Certifications:   getStringArg(args, "certifications", ""),
+					}
+					if err := chatRoom.StoreCaregiver(caregiver); err != nil {
+						log.Printf("Error storing caregiver %s: %v", caregiver.Email, err)
+						response = fmt.Sprintf("Error storing caregiver: %v", err)
+					}
+
+				case "store_patient":
+					patient := &Patient{
+						Email:                getStringArg(args, "email", ""),
+						CareNeeds:            getStringArg(args, "care_needs", ""),
+						Location:             getStringArg(args, "location", ""),
+						ScheduleRequirements: getStringArg(args, "schedule_requirements", ""),
+						Budget:               getFloatArg(args, "budget", 0),
+						SpecialRequirements:  getStringArg(args, "special_requirements", ""),
+					}
+					if err := chatRoom.StorePatient(patient); err != nil {
+						log.Printf("Error storing patient %s: %v", patient.Email, err)
+						response = fmt.Sprintf("Error storing patient: %v", err)
+					}
+
+				default:
+					response = "Function call not recognized"
 				}
 
-				response := "Here are the caregivers that match your requirements:\n"
-				if len(matches) == 0 {
-					response = "I couldn't find any caregivers matching your exact requirements. Consider adjusting your criteria."
+				if err := chatRoom.AddMessageWithRecipient(userEmail, "assistant", response, "admin"); err != nil {
+					log.Printf("Error adding function response: %v", err)
 				}
-				for _, c := range matches {
-					response += fmt.Sprintf("\nCaregiver: %s\nLocation: %s\nAvailability: %s\nSpecializations: %s\nRate: $%.2f/hr\nExperience: %s\n",
-						c.Email, c.Location, c.Availability, c.Specializations, c.RateExpectations, c.Experience)
+			} else if choice.Content != "" {
+				if err := chatRoom.AddMessageWithRecipient(userEmail, "assistant", choice.Content, "admin"); err != nil {
+					log.Printf("Error adding assistant response: %v", err)
 				}
-
-				if err := chatRoom.AddMessageWithRecipient("assistant", response, "admin"); err != nil {
-					log.Printf("Error adding assistant message: %v", err)
-				}
-			}
-		} else if len(chatResp.Choices) > 0 {
-			assistantResponse := chatResp.Choices[0].Message.Content
-			if assistantResponse == "" {
-				assistantResponse = "I need your email address before we proceed. Could you please provide it?"
-			}
-			log.Printf("\nAssistant response: %s", assistantResponse)
-
-			if err := chatRoom.AddMessageWithRecipient("assistant", assistantResponse, "admin"); err != nil {
-				log.Printf("Error adding assistant message: %v", err)
-				http.Error(w, "Failed to add assistant message", http.StatusInternalServerError)
-				return
 			}
 		}
 
-		http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("/?email=%s", url.QueryEscape(userEmail)), http.StatusSeeOther)
 		return
 	}
 
-	// Prepare template data
+	// Handle GET request
+	log.Printf("Getting messages for email: %s", userEmail)
+	messages := chatRoom.GetUserMessages(userEmail)
+
 	data := TemplateData{
-		Messages:  chatRoom.messages,
-		UserEmail: chatRoom.userContext.Email,
+		Messages:  messages,
+		UserEmail: userEmail,
 	}
 
 	tmpl, err := template.New("chat").Parse(htmlTemplate)
@@ -792,89 +880,87 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = tmpl.Execute(w, data)
-	if err != nil {
+	if err := tmpl.Execute(w, data); err != nil {
 		http.Error(w, "Failed to execute template", http.StatusInternalServerError)
 		return
 	}
 }
 
+// Helper functions to safely get values from the arguments map
+func getStringArg(args map[string]interface{}, key string, defaultValue string) string {
+	if val, ok := args[key]; ok && val != nil {
+		if str, ok := val.(string); ok {
+			return str
+		}
+	}
+	return defaultValue
+}
+
+func getFloatArg(args map[string]interface{}, key string, defaultValue float64) float64 {
+	if val, ok := args[key]; ok && val != nil {
+		switch v := val.(type) {
+		case float64:
+			return v
+		case float32:
+			return float64(v)
+		case int:
+			return float64(v)
+		case string:
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				return f
+			}
+		}
+	}
+	return defaultValue
+}
+
 // AddMessage adds a new message to the app's message history
-func (app *App) AddMessage(role, content string) error {
-	// Create new message
-	msg := Message{
-		Role:    role,
-		Content: content,
-	}
-
-	// Add to current session
-	app.messages = append(app.messages, msg)
-
-	// Trim history if it exceeds maxHistory
-	if len(app.messages) > app.maxHistory {
-		app.messages = app.messages[len(app.messages)-app.maxHistory:]
-	}
-
-	// If we have an email context, store in database
-	if app.userContext.Email != "" {
-		recipient := "admin" // Default recipient is admin
-		err := app.db.Exec(`
-			INSERT INTO chat_history (email, role, content, created_at, recipient)
-			VALUES (?, ?, ?, ?, ?)
-		`, app.userContext.Email, role, content, time.Now(), recipient)
-		if err != nil {
-			return fmt.Errorf("failed to store chat history: %v", err)
-		}
-	}
-
-	return nil
+func (app *App) AddMessage(email, role, content string) error {
+	return app.AddMessageWithRecipient(email, role, content, "admin")
 }
 
-// Add new method with recipient parameter
-func (app *App) AddMessageWithRecipient(role, content, recipient string) error {
-	// Create new message
-	msg := Message{
-		Role:    role,
-		Content: content,
-	}
+// GetMessagesByRole returns messages filtered by role for a specific user
+func (app *App) GetMessagesByRole(email, role string) ([]Message, error) {
+	app.mu.RLock()
+	defer app.mu.RUnlock()
 
-	// Add to current session
-	app.messages = append(app.messages, msg)
-
-	// Trim history if it exceeds maxHistory
-	if len(app.messages) > app.maxHistory {
-		app.messages = app.messages[len(app.messages)-app.maxHistory:]
-	}
-
-	// If we have an email context, store in database
-	if app.userContext.Email != "" {
-		if recipient == "" {
-			recipient = "admin"
-		}
-		err := app.db.Exec(`
-			INSERT INTO chat_history (email, role, content, created_at, recipient)
-			VALUES (?, ?, ?, ?, ?)
-		`, app.userContext.Email, role, content, time.Now(), recipient)
-		if err != nil {
-			return fmt.Errorf("failed to store chat history: %v", err)
-		}
-	}
-
-	return nil
-}
-
-// GetMessagesByRole returns messages filtered by role
-func (app *App) GetMessagesByRole(role string) ([]Message, error) {
 	var filtered []Message
-	for _, msg := range app.messages {
-		if msg.Role == role {
-			filtered = append(filtered, msg)
+	if messages, exists := app.userSessions[email]; exists {
+		for _, msg := range messages {
+			if msg.Role == role {
+				filtered = append(filtered, msg)
+			}
 		}
 	}
 	return filtered, nil
 }
 
-// ListCaregivers returns all registered caregivers from the database
+// ListPatients returns all patients from the database
+func (app *App) ListPatients() ([]Patient, error) {
+	var patients []Patient
+	result, err := app.db.Query("SELECT * FROM patients")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query patients: %v", err)
+	}
+	defer result.Close()
+
+	err = result.Iterate(func(r *chai.Row) error {
+		var p Patient
+		if err := r.Scan(&p.Email, &p.CareNeeds, &p.Location, &p.ScheduleRequirements,
+			&p.Budget, &p.SpecialRequirements, &p.CreatedAt); err != nil {
+			return fmt.Errorf("failed to scan patient: %v", err)
+		}
+		patients = append(patients, p)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to iterate patients: %v", err)
+	}
+
+	return patients, nil
+}
+
+// ListCaregivers returns all caregivers from the database
 func (app *App) ListCaregivers() ([]Caregiver, error) {
 	var caregivers []Caregiver
 	result, err := app.db.Query("SELECT * FROM caregivers")
@@ -899,50 +985,60 @@ func (app *App) ListCaregivers() ([]Caregiver, error) {
 	return caregivers, nil
 }
 
-// Add this new function to App struct
+// FindMatchingCaregivers finds caregivers that match a patient's requirements
 func (app *App) FindMatchingCaregivers(patientEmail string) ([]Caregiver, error) {
 	// First get the patient's requirements
 	var patient Patient
-	row, err := app.db.QueryRow("SELECT * FROM patients WHERE email = ?", patientEmail)
+	result, err := app.db.Query("SELECT * FROM patients WHERE email = ?", patientEmail)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query patient: %v", err)
 	}
+	defer result.Close()
 
-	// Add error handling for when patient is not found
-	if row == nil {
-		return nil, fmt.Errorf("patient not found: %s", patientEmail)
-	}
-
-	err = row.Scan(&patient.Email, &patient.CareNeeds, &patient.Location,
-		&patient.ScheduleRequirements, &patient.Budget, &patient.SpecialRequirements, &patient.CreatedAt)
+	found := false
+	err = result.Iterate(func(r *chai.Row) error {
+		if err := r.Scan(&patient.Email, &patient.CareNeeds, &patient.Location,
+			&patient.ScheduleRequirements, &patient.Budget, &patient.SpecialRequirements,
+			&patient.CreatedAt); err != nil {
+			return fmt.Errorf("failed to scan patient: %v", err)
+		}
+		found = true
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to find patient: %v", err)
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("patient not found")
 	}
 
-	// Query caregivers matching criteria
-	result, err := app.db.Query(`
+	// Now find matching caregivers
+	// For now, match based on location and budget
+	result, err = app.db.Query(`
 		SELECT * FROM caregivers 
-		WHERE location = ? 
+		WHERE location LIKE ? 
 		AND rate_expectations <= ?
-		AND availability != ''`, // Only return caregivers with availability set
-		patient.Location, patient.Budget)
+	`, "%"+patient.Location+"%", patient.Budget)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query caregivers: %v", err)
+		return nil, fmt.Errorf("failed to query matching caregivers: %v", err)
 	}
 	defer result.Close()
 
-	var matches []Caregiver
+	var caregivers []Caregiver
 	err = result.Iterate(func(r *chai.Row) error {
 		var c Caregiver
 		if err := r.Scan(&c.Email, &c.Experience, &c.Location, &c.Availability,
 			&c.Specializations, &c.RateExpectations, &c.Certifications, &c.CreatedAt); err != nil {
 			return fmt.Errorf("failed to scan caregiver: %v", err)
 		}
-		matches = append(matches, c)
+		caregivers = append(caregivers, c)
 		return nil
 	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to iterate matching caregivers: %v", err)
+	}
 
-	return matches, err
+	return caregivers, nil
 }
 
 // Add new method to load chat history
@@ -1071,6 +1167,250 @@ func (app *App) RemoveSkill(email, skill string) error {
 	return app.db.Exec("DELETE FROM skills WHERE email = ? AND skill = ?", email, skill)
 }
 
+// GetUserMessages gets all messages for a specific email from the database
+func (app *App) GetUserMessages(email string) []Message {
+	var messages []Message
+	result, err := app.db.Query(`
+		SELECT role, content 
+		FROM chat_history 
+		WHERE email = ? 
+		ORDER BY created_at ASC
+	`, email)
+	if err != nil {
+		log.Printf("Error querying chat history for %s: %v", email, err)
+		return messages
+	}
+	defer result.Close()
+
+	err = result.Iterate(func(r *chai.Row) error {
+		var msg Message
+		if err := r.Scan(&msg.Role, &msg.Content); err != nil {
+			log.Printf("Error scanning message: %v", err)
+			return err
+		}
+		messages = append(messages, msg)
+		return nil
+	})
+	if err != nil {
+		log.Printf("Error iterating chat history: %v", err)
+		return messages
+	}
+
+	return messages
+}
+
+// AddMessageWithRecipient adds a message to the chat history
+func (app *App) AddMessageWithRecipient(email, role, content, recipient string) error {
+	// Store in database
+	err := app.db.Exec(`
+		INSERT INTO chat_history (
+			email, role, content, recipient, created_at
+		) VALUES (?, ?, ?, ?, ?)
+	`, email, role, content, recipient, time.Now())
+
+	if err != nil {
+		return fmt.Errorf("failed to store message: %v", err)
+	}
+
+	return nil
+}
+
+// Add this to ensure the chat_history table exists
+func (app *App) createSchema() error {
+	err := app.db.Exec(`
+		CREATE TABLE IF NOT EXISTS chat_history (
+			email TEXT,
+			role TEXT,
+			content TEXT,
+			recipient TEXT,
+			created_at TIMESTAMP,
+			PRIMARY KEY (email, created_at)
+		);
+		CREATE INDEX IF NOT EXISTS idx_chat_history_email ON chat_history(email);
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create chat_history table: %v", err)
+	}
+
+	// ... rest of schema creation ...
+	return nil
+}
+
+// Add this debug function
+func (app *App) DebugPrintAllMessages() {
+	result, err := app.db.Query("SELECT email, role, content, created_at FROM chat_history ORDER BY email, created_at")
+	if err != nil {
+		log.Printf("Debug: Error querying all messages: %v", err)
+		return
+	}
+	defer result.Close()
+
+	log.Println("Debug: All messages in database:")
+	err = result.Iterate(func(r *chai.Row) error {
+		var email, role, content string
+		var createdAt time.Time
+		if err := r.Scan(&email, &role, &content, &createdAt); err != nil {
+			return err
+		}
+		log.Printf("Email: %s, Role: %s, Time: %s, Content: %s",
+			email, role, createdAt.Format(time.RFC3339), content)
+		return nil
+	})
+	if err != nil {
+		log.Printf("Debug: Error iterating messages: %v", err)
+	}
+}
+
+// Add these functions to help with testing
+
+func processTestData(app *App, filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		return fmt.Errorf("failed to open test data file: %v", err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+
+	// Process each line as if it were a chat message
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		// Split line into email and message
+		parts := strings.SplitN(line, ": ", 2)
+		if len(parts) != 2 {
+			log.Printf("Skipping invalid line format: %s", line)
+			continue
+		}
+
+		email, message := parts[0], parts[1]
+
+		// Add the message to the chat history
+		if err := app.AddMessageWithRecipient(email, "user", message, "admin"); err != nil {
+			log.Printf("Error adding test message for %s: %v", email, err)
+			continue
+		}
+
+		// Get chat history for OpenAI
+		messages := []Message{
+			{Role: "system", Content: systemPrompt},
+		}
+		messages = append(messages, app.GetUserMessages(email)...)
+
+		// Call OpenAI
+		chatReq := ChatRequest{
+			Model:    "gpt-3.5-turbo",
+			Messages: messages,
+		}
+
+		log.Printf("Sending request to OpenAI for %s: %s", email, message)
+		chatResp, err := callOpenAI(chatReq)
+		if err != nil {
+			log.Printf("Error calling OpenAI for %s: %v", email, err)
+			continue
+		}
+
+		// Process OpenAI response
+		if len(chatResp.Choices) > 0 {
+			choice := chatResp.Choices[0].Message
+			log.Printf("Response from OpenAI for %s: %+v", email, choice)
+
+			if choice.FunctionCall != nil {
+				// Handle function calls
+				args, err := choice.FunctionCall.GetArguments()
+				if err != nil {
+					log.Printf("Error parsing function arguments: %v", err)
+					continue
+				}
+
+				switch choice.FunctionCall.Name {
+				case "store_caregiver":
+					caregiver := &Caregiver{
+						Email:            getStringArg(args, "email", ""),
+						Experience:       getStringArg(args, "experience", ""),
+						Location:         getStringArg(args, "location", ""),
+						Availability:     getStringArg(args, "availability", ""),
+						Specializations:  getStringArg(args, "specializations", ""),
+						RateExpectations: getFloatArg(args, "rate_expectations", 0),
+						Certifications:   getStringArg(args, "certifications", ""),
+					}
+					if err := app.StoreCaregiver(caregiver); err != nil {
+						log.Printf("Error storing caregiver %s: %v", caregiver.Email, err)
+					} else {
+						log.Printf("Successfully stored caregiver: %s", caregiver.Email)
+					}
+
+				case "store_patient":
+					patient := &Patient{
+						Email:                getStringArg(args, "email", ""),
+						CareNeeds:            getStringArg(args, "care_needs", ""),
+						Location:             getStringArg(args, "location", ""),
+						ScheduleRequirements: getStringArg(args, "schedule_requirements", ""),
+						Budget:               getFloatArg(args, "budget", 0),
+						SpecialRequirements:  getStringArg(args, "special_requirements", ""),
+					}
+					if err := app.StorePatient(patient); err != nil {
+						log.Printf("Error storing patient %s: %v", patient.Email, err)
+					} else {
+						log.Printf("Successfully stored patient: %s", patient.Email)
+					}
+				}
+			}
+
+			// Store the assistant's response
+			if choice.Content != "" {
+				log.Printf("Assistant response to %s: %s", email, choice.Content)
+				if err := app.AddMessageWithRecipient(email, "assistant", choice.Content, "admin"); err != nil {
+					log.Printf("Error adding assistant response for %s: %v", email, err)
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading test data: %v", err)
+	}
+
+	return nil
+}
+
+// Add these formatting functions
+func formatPatientList(patients []Patient) string {
+	var sb strings.Builder
+	sb.WriteString("List of Patients:\n\n")
+
+	for _, p := range patients {
+		sb.WriteString(fmt.Sprintf("Email: %s\n", p.Email))
+		sb.WriteString(fmt.Sprintf("Location: %s\n", p.Location))
+		sb.WriteString(fmt.Sprintf("Care Needs: %s\n", p.CareNeeds))
+		sb.WriteString(fmt.Sprintf("Schedule Requirements: %s\n", p.ScheduleRequirements))
+		sb.WriteString(fmt.Sprintf("Budget: $%.2f/hour\n", p.Budget))
+		sb.WriteString(fmt.Sprintf("Special Requirements: %s\n", p.SpecialRequirements))
+		sb.WriteString("-------------------\n")
+	}
+
+	return sb.String()
+}
+
+func formatCaregiverList(caregivers []Caregiver) string {
+	var sb strings.Builder
+	sb.WriteString("Here are the matching caregivers:\n\n")
+
+	for _, c := range caregivers {
+		// Create a link for each caregiver
+		sb.WriteString(fmt.Sprintf("• <a href='/profile?email=%s'>%s</a>\n",
+			url.QueryEscape(c.Email), c.Email))
+		sb.WriteString(fmt.Sprintf("  Location: %s\n", c.Location))
+		sb.WriteString(fmt.Sprintf("  Rate: $%.2f/hour\n", c.RateExpectations))
+		sb.WriteString(fmt.Sprintf("  Availability: %s\n\n", c.Availability))
+	}
+
+	return sb.String()
+}
+
 func main() {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
@@ -1086,6 +1426,16 @@ func main() {
 
 	http.HandleFunc("/", handleChat)
 	http.HandleFunc("/chat", handleChat)
+
+	// Process test data if the file exists
+	if _, err := os.Stat("testdata.txt"); err == nil {
+		log.Println("Processing test data...")
+		if err := processTestData(chatRoom, "testdata.txt"); err != nil {
+			log.Printf("Error processing test data: %v", err)
+		}
+		// Print debug information after processing
+		chatRoom.DebugPrintAllMessages()
+	}
 
 	port := ":8080"
 	fmt.Printf("Server starting on http://localhost%s\n", port)
