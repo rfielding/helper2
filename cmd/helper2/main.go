@@ -10,11 +10,39 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/ichiban/prolog"
+	"github.com/chaisql/chai"
 )
+
+// Database models
+type Caregiver struct {
+	Email            string    `json:"email"`
+	Experience       string    `json:"experience"`
+	Location         string    `json:"location"`
+	Availability     string    `json:"availability"`
+	Specializations  string    `json:"specializations"`
+	RateExpectations float64   `json:"rate_expectations"`
+	Certifications   string    `json:"certifications"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
+type Patient struct {
+	Email                string    `json:"email"`
+	CareNeeds            string    `json:"care_needs"`
+	Location             string    `json:"location"`
+	ScheduleRequirements string    `json:"schedule_requirements"`
+	Budget               float64   `json:"budget"`
+	SpecialRequirements  string    `json:"special_requirements"`
+	CreatedAt            time.Time `json:"created_at"`
+}
+
+type Match struct {
+	CaregiverEmail string    `json:"caregiver_email"`
+	PatientEmail   string    `json:"patient_email"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+}
 
 type Message struct {
 	Role    string `json:"role"`
@@ -45,18 +73,20 @@ type ChatResponse struct {
 	Choices []Choice `json:"choices"`
 }
 
-type ChatRoom struct {
-	Messages []Message
-	mu       sync.Mutex
-	pl       *prolog.Interpreter
+type UserContext struct {
+	Email string
+	Role  string // "caregiver" or "patient"
+}
+
+type App struct {
+	db          *chai.DB
+	messages    []Message
+	apiKey      string
+	userContext UserContext
 }
 
 var (
-	chatRoom = &ChatRoom{
-		Messages: make([]Message, 0),
-		pl:       prolog.New(nil, nil),
-	}
-	apiKey string
+	chatRoom *App
 )
 
 const (
@@ -109,7 +139,8 @@ const (
 </body>
 </html>
 `
-	dbFile = "facts.pl" // File to store Prolog facts
+
+	dbFile = "chat.data"
 )
 
 const systemPrompt = `You are a matchmaking assistant helping to connect caregivers with patients. 
@@ -117,10 +148,7 @@ const systemPrompt = `You are a matchmaking assistant helping to connect caregiv
 IMPORTANT: Before collecting any other information, you must first get the user's email address.
 If you don't have their email, ask for it before proceeding with any other questions.
 
-After getting the email, for each piece of information:
-1. Use the add_fact function to store it
-2. Acknowledge what was stored
-3. Ask follow-up questions about missing information
+After getting the email, collect and store information using store_caregiver or store_patient functions.
 
 Required information for caregivers:
 - Email (MUST BE COLLECTED FIRST)
@@ -128,290 +156,111 @@ Required information for caregivers:
 - Location
 - Availability
 - Specializations
-- Rate expectations
+- Rate expectations (hourly rate in dollars)
 
 Required information for patients:
 - Email (MUST BE COLLECTED FIRST)
 - Care needs
 - Location
 - Schedule requirements
-- Budget
+- Budget (hourly rate in dollars)
 - Special requirements
 
 Always verify you have the email before storing any other information.`
 
-// Add email to fact structure in Prolog
-func (cr *ChatRoom) initProlog() error {
-	err := cr.pl.Exec(`
-		:- dynamic(fact/4).  % Email, Category, Fact, Timestamp
-		
-		% Find facts by email and category
-		find_facts(Email, Category, Facts) :-
-			findall(Fact, fact(Email, Category, Fact, _), Facts).
-		
-		% Find matching facts by email, category and pattern
-		find_matching_facts(Email, Category, Pattern, Facts) :-
-			findall(Fact, (
-				fact(Email, Category, Fact, _),
-				sub_string(Fact, _, _, _, Pattern)
-			), Facts).
+func NewApp(apiKey string) (*App, error) {
+	// Initialize database with the specific file
+	db, err := chai.Open(dbFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %v", err)
+	}
 
-		% Check if email exists
-		has_email(Email) :-
-			fact(Email, 'email', _, _).
+	// Create schema
+	err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS caregivers (
+			email TEXT PRIMARY KEY,
+			experience TEXT,
+			location TEXT,
+			availability TEXT,
+			specializations TEXT,
+			rate_expectations REAL,
+			certifications TEXT,
+			created_at TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS patients (
+			email TEXT PRIMARY KEY,
+			care_needs TEXT,
+			location TEXT,
+			schedule_requirements TEXT,
+			budget REAL,
+			special_requirements TEXT,
+			created_at TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS matches (
+			caregiver_email TEXT,
+			patient_email TEXT,
+			status TEXT,
+			created_at TIMESTAMP,
+			PRIMARY KEY (caregiver_email, patient_email)
+		);
 	`)
 	if err != nil {
-		return fmt.Errorf("failed to initialize prolog: %v", err)
+		return nil, fmt.Errorf("failed to create schema: %v", err)
 	}
-	return nil
+
+	return &App{
+		db:          db,
+		messages:    make([]Message, 0),
+		apiKey:      apiKey,
+		userContext: UserContext{},
+	}, nil
 }
 
-// Helper function to sanitize strings for Prolog atoms
-func sanitizeForProlog(s string) string {
-	// Replace @ with _at_
-	s = strings.ReplaceAll(s, "@", "_at_")
-	// Replace . with _dot_
-	s = strings.ReplaceAll(s, ".", "_dot_")
-	// Replace spaces with underscores
-	s = strings.ReplaceAll(s, " ", "_")
-	// Remove any other special characters
-	s = strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
-			return r
-		}
-		return '_'
-	}, s)
-	return s
+func (app *App) Close() error {
+	return app.db.Close()
 }
 
-// Modify AddFact to handle Prolog atom sanitization
-func (cr *ChatRoom) AddFact(email, category, fact string) (string, error) {
-	cr.mu.Lock()
-	defer cr.mu.Unlock()
-
-	log.Printf("Adding fact - Email: %s, Category: %s, Fact: %s", email, category, fact)
-
-	// Sanitize email and category for use as Prolog atoms
-	safeEmail := sanitizeForProlog(email)
-	safeCategory := sanitizeForProlog(category)
-
-	// Format the Prolog fact - use single quotes to preserve the original fact string
-	// Remove any trailing dot from the fact before adding our own
-	fact = strings.TrimSuffix(fact, ".")
-	prologFact := fmt.Sprintf("fact('%s', '%s', %s).",
-		safeEmail,
-		safeCategory,
-		fact, // Use the fact directly as it's already in Prolog format
-	)
-
-	log.Printf("Asserting Prolog fact: %s", prologFact)
-
-	// Assert the fact
-	err := cr.pl.Exec(`assert(` + prologFact + `)`)
-	if err != nil {
-		log.Printf("Error asserting fact: %v", err)
-		return "", fmt.Errorf("failed to assert fact: %v", err)
-	}
-
-	// Log current facts for this email
-	sols, err := cr.pl.Query(`find_facts(?, _, Facts).`, safeEmail)
-	if err == nil {
-		defer sols.Close()
-		log.Printf("Current facts for email %s:", email)
-		for sols.Next() {
-			var s struct{ Facts []string }
-			if err := sols.Scan(&s); err == nil {
-				for _, fact := range s.Facts {
-					log.Printf("  %s", fact)
-				}
-			}
-		}
-	}
-
-	return prologFact, nil
+// Database operations
+func (app *App) StoreCaregiver(c *Caregiver) error {
+	c.CreatedAt = time.Now()
+	return app.db.Exec(`
+		INSERT INTO caregivers (
+			email, experience, location, availability, 
+			specializations, rate_expectations, certifications, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, c.Email, c.Experience, c.Location, c.Availability,
+		c.Specializations, c.RateExpectations, c.Certifications, c.CreatedAt)
 }
 
-// Add function to check if email exists
-func (cr *ChatRoom) HasEmail(email string) bool {
-	cr.mu.Lock()
-	defer cr.mu.Unlock()
-
-	sols, err := cr.pl.Query(`has_email(?).`, email)
-	if err != nil {
-		return false
-	}
-	defer sols.Close()
-
-	return sols.Next()
+func (app *App) StorePatient(p *Patient) error {
+	p.CreatedAt = time.Now()
+	return app.db.Exec(`
+		INSERT INTO patients (
+			email, care_needs, location, schedule_requirements,
+			budget, special_requirements, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, p.Email, p.CareNeeds, p.Location, p.ScheduleRequirements,
+		p.Budget, p.SpecialRequirements, p.CreatedAt)
 }
 
-// Add method to save facts to disk
-func (cr *ChatRoom) saveFacts() error {
-	cr.mu.Lock()
-	defer cr.mu.Unlock()
-
-	var facts []string
-	sols, err := cr.pl.Query(`listing(fact/3).`)
-	if err != nil {
-		return fmt.Errorf("failed to query facts: %v", err)
-	}
-	defer sols.Close()
-
-	for sols.Next() {
-		var s struct {
-			Listing string
-		}
-		if err := sols.Scan(&s); err != nil {
-			return fmt.Errorf("failed to scan facts: %v", err)
-		}
-		facts = append(facts, s.Listing)
-	}
-
-	return os.WriteFile(dbFile, []byte(strings.Join(facts, "\n")), 0644)
-}
-
-// Add method to extract facts from message
-func (cr *ChatRoom) ExtractFacts(message string) error {
-	sols, err := cr.pl.Query(`extract_facts(?, Facts).`, message)
-	if err != nil {
-		return fmt.Errorf("failed to extract facts: %v", err)
-	}
-	defer sols.Close()
-
-	for sols.Next() {
-		var s struct {
-			Facts []string
-		}
-		if err := sols.Scan(&s); err != nil {
-			return fmt.Errorf("failed to scan facts: %v", err)
-		}
-		for _, fact := range s.Facts {
-			_, err := cr.AddFact("auto", "extracted", fact)
-			if err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (cr *ChatRoom) AddMessage(role, content string) error {
-	cr.mu.Lock()
-	defer cr.mu.Unlock()
-
-	msg := Message{Role: role, Content: content}
-	cr.Messages = append(cr.Messages, msg)
-
-	// Add message to Prolog database
-	err := cr.pl.Exec(`assert(message(?, ?, ?)).`,
-		role,              // Role
-		content,           // Content
-		time.Now().Unix(), // Timestamp
-	)
-	if err != nil {
-		return fmt.Errorf("failed to assert message: %v", err)
-	}
-
-	// If it's an assistant message, try to extract facts
-	if role == "assistant" {
-		err = cr.pl.Exec(`
-			(is_fact(?, Fact) ->
-				assert(fact(Fact, ?))
-			; true).
-		`, content, time.Now().Unix())
-		if err != nil {
-			return fmt.Errorf("failed to assert fact: %v", err)
-		}
-	}
-
-	return nil
-}
-
-// Modify QueryFacts to support categories
-func (cr *ChatRoom) QueryFacts(category, query string) ([]string, error) {
-	cr.mu.Lock()
-	defer cr.mu.Unlock()
-
-	var facts []string
-	sols, err := cr.pl.Query(`find_matching_facts(?, ?, Facts).`, category, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query facts: %v", err)
-	}
-	defer sols.Close()
-
-	for sols.Next() {
-		var s struct {
-			Facts []string
-		}
-		if err := sols.Scan(&s); err != nil {
-			return nil, fmt.Errorf("failed to scan solution: %v", err)
-		}
-		facts = append(facts, s.Facts...)
-	}
-
-	return facts, nil
-}
-
-// Get all messages for a specific role
-func (cr *ChatRoom) GetMessagesByRole(role string) ([]Message, error) {
-	cr.mu.Lock()
-	defer cr.mu.Unlock()
-
-	var messages []Message
-	sols, err := cr.pl.Query(`message(?, Content, _).`, role)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query messages: %v", err)
-	}
-	defer sols.Close()
-
-	for sols.Next() {
-		var s struct {
-			Content string
-		}
-		if err := sols.Scan(&s); err != nil {
-			return nil, fmt.Errorf("failed to scan solution: %v", err)
-		}
-		messages = append(messages, Message{Role: role, Content: s.Content})
-	}
-
-	return messages, nil
+func (app *App) CreateMatch(m *Match) error {
+	m.CreatedAt = time.Now()
+	return app.db.Exec(`
+		INSERT INTO matches (caregiver_email, patient_email, status, created_at)
+		VALUES (?, ?, ?, ?)
+	`, m.CaregiverEmail, m.PatientEmail, m.Status, m.CreatedAt)
 }
 
 func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 	functionDefs := []map[string]interface{}{
 		{
-			"name":        "add_fact",
-			"description": "Add one or more Prolog facts to the database. Each argument should be a complete Prolog fact string like: caregiver(email, phone) or availability(email, time).",
+			"name":        "list_caregivers",
+			"description": "List all registered caregivers in the system",
 			"parameters": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"arguments": map[string]interface{}{
-						"type": "array",
-						"items": map[string]interface{}{
-							"type": "string",
-						},
-						"minItems": 1,
-					},
-				},
-				"required": []string{"arguments"},
-			},
-		},
-		{
-			"name":        "query_facts",
-			"description": "Query facts from the database using Prolog patterns",
-			"parameters": map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"category": map[string]interface{}{
-						"type":        "string",
-						"description": "Category to query",
-					},
-					"pattern": map[string]interface{}{
-						"type":        "string",
-						"description": "Pattern to match",
-					},
-				},
-				"required": []string{"category", "pattern"},
+				"type":       "object",
+				"properties": map[string]interface{}{},
 			},
 		},
 	}
@@ -437,7 +286,7 @@ func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 	}
 
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+apiKey)
+	request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("OPENAI_API_KEY")))
 
 	client := &http.Client{}
 	resp, err := client.Do(request)
@@ -494,6 +343,28 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		message := r.FormValue("message")
 		role := r.FormValue("role")
 
+		// Check for email in the message if we don't already have one
+		if chatRoom.userContext.Email == "" {
+			words := strings.Fields(message)
+			for _, word := range words {
+				if strings.Contains(word, "@") {
+					email := strings.Trim(word, ".,!?")
+					chatRoom.userContext.Email = email
+					log.Printf("Stored email context: %s", email)
+
+					// Store initial caregiver record
+					caregiver := &Caregiver{
+						Email:     email,
+						CreatedAt: time.Now(),
+					}
+					if err := chatRoom.StoreCaregiver(caregiver); err != nil {
+						log.Printf("Error storing initial caregiver record: %v", err)
+					}
+					break
+				}
+			}
+		}
+
 		log.Printf("\n=== New Chat Message ===")
 		log.Printf("Role: %s", role)
 		log.Printf("Message: %s", message)
@@ -517,7 +388,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 				Content: systemPrompt,
 			},
 		}
-		messages = append(messages, chatRoom.Messages...)
+		messages = append(messages, chatRoom.messages...)
 
 		chatReq := ChatRequest{
 			Model:    "gpt-3.5-turbo",
@@ -545,54 +416,18 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Arguments: %v", args)
 
 			switch fc.Name {
-			case "add_fact":
-				if len(args) > 0 {
-					// Parse the Prolog fact directly
-					fact := args[0]
-					// Extract email from the fact (assuming it's the first argument in the fact)
-					email := ""
-					if start := strings.Index(fact, "'"); start != -1 {
-						if end := strings.Index(fact[start+1:], "'"); end != -1 {
-							email = fact[start+1 : start+1+end]
-						}
+			case "list_caregivers":
+				caregivers, err := chatRoom.ListCaregivers()
+				if err != nil {
+					log.Printf("Error listing caregivers: %v", err)
+				} else {
+					response := "Here are the registered caregivers:\n"
+					for _, c := range caregivers {
+						response += fmt.Sprintf("\nEmail: %s\nLocation: %s\nAvailability: %s\nSpecializations: %s\nRate: $%.2f/hr\n",
+							c.Email, c.Location, c.Availability, c.Specializations, c.RateExpectations)
 					}
-
-					log.Printf("Extracted email: %s from fact: %s", email, fact)
-
-					if email == "" {
-						response := "I need your email address before I can store any information. Could you please provide your email?"
-						if err := chatRoom.AddMessage("assistant", response); err != nil {
-							log.Printf("Error adding assistant message: %v", err)
-						}
-					} else {
-						// Store the entire fact
-						prologFact, err := chatRoom.AddFact(email, "fact", fact)
-						if err != nil {
-							log.Printf("Error adding fact: %v", err)
-						} else {
-							log.Printf("Added Prolog fact: %s", prologFact)
-							response := "I've stored your information. Is there anything else you'd like to add about your experience or certifications?"
-							if err := chatRoom.AddMessage("assistant", response); err != nil {
-								log.Printf("Error adding assistant message: %v", err)
-							}
-						}
-					}
-				}
-			case "query_facts":
-				if len(args) >= 2 {
-					category := args[0]
-					query := args[1]
-
-					log.Printf("Querying facts - Category: %s, Query: %s", category, query)
-					facts, err := chatRoom.QueryFacts(category, query)
-					if err != nil {
-						log.Printf("Error querying facts: %v", err)
-					} else {
-						log.Printf("Found facts: %v", facts)
-						messages = append(messages, Message{
-							Role:    "function",
-							Content: fmt.Sprintf("Found facts: %v", facts),
-						})
+					if err := chatRoom.AddMessage("assistant", response); err != nil {
+						log.Printf("Error adding assistant message: %v", err)
 					}
 				}
 			}
@@ -626,7 +461,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		messages = chatRoom.Messages
+		messages = chatRoom.messages
 	}
 
 	data := struct {
@@ -650,16 +485,63 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// AddMessage adds a new message to the app's message history
+func (app *App) AddMessage(role, content string) error {
+	app.messages = append(app.messages, Message{
+		Role:    role,
+		Content: content,
+	})
+	return nil
+}
+
+// GetMessagesByRole returns messages filtered by role
+func (app *App) GetMessagesByRole(role string) ([]Message, error) {
+	var filtered []Message
+	for _, msg := range app.messages {
+		if msg.Role == role {
+			filtered = append(filtered, msg)
+		}
+	}
+	return filtered, nil
+}
+
+// ListCaregivers returns all registered caregivers from the database
+func (app *App) ListCaregivers() ([]Caregiver, error) {
+	var caregivers []Caregiver
+	result, err := app.db.Query("SELECT * FROM caregivers")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query caregivers: %v", err)
+	}
+	defer result.Close()
+
+	err = result.Iterate(func(r *chai.Row) error {
+		var c Caregiver
+		if err := r.Scan(&c.Email, &c.Experience, &c.Location, &c.Availability,
+			&c.Specializations, &c.RateExpectations, &c.Certifications, &c.CreatedAt); err != nil {
+			return fmt.Errorf("failed to scan caregiver: %v", err)
+		}
+		caregivers = append(caregivers, c)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to iterate caregivers: %v", err)
+	}
+
+	return caregivers, nil
+}
+
 func main() {
-	apiKey = os.Getenv("OPENAI_API_KEY")
+	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
 		log.Fatal("OPENAI_API_KEY environment variable is required")
 	}
 
-	// Initialize Prolog database
-	if err := chatRoom.initProlog(); err != nil {
+	var err error
+	chatRoom, err = NewApp(apiKey)
+	if err != nil {
 		log.Fatal(err)
 	}
+	defer chatRoom.Close()
 
 	http.HandleFunc("/", handleChat)
 	http.HandleFunc("/chat", handleChat)
