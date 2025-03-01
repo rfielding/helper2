@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -95,8 +96,22 @@ const (
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Chat Room</title>
+    <title>Helper - Connecting Caregivers to Patients</title>
     <style>
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .red-cross {
+            color: #FF0000;
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+        .app-description {
+            color: #666;
+            font-style: italic;
+            margin-bottom: 20px;
+        }
         .chat-container {
             max-width: 800px;
             margin: 0 auto;
@@ -116,11 +131,49 @@ const (
         .system {
             background-color: #fff3e0;
         }
+        .message-form {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        .message-input {
+            flex-grow: 1;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .recipient-input {
+            width: 200px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .send-button {
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .send-button:hover {
+            background-color: #45a049;
+        }
+        .user-email {
+            text-align: right;
+            color: #666;
+            margin-bottom: 10px;
+        }
     </style>
 </head>
 <body>
     <div class="chat-container">
-        <h1>Chat Room</h1>
+        <div class="header">
+            <div class="red-cross">✚</div>
+            <h1>Helper</h1>
+            <div class="app-description">Connecting Caregivers to Patients</div>
+        </div>
+        <div class="user-email">Logged in as: {{.UserEmail}}</div>
         <div id="messages">
             {{range .Messages}}
             <div class="message {{.Role}}">
@@ -128,13 +181,10 @@ const (
             </div>
             {{end}}
         </div>
-        <form method="POST" action="/chat">
-            <select name="role">
-                <option value="user">User</option>
-                <option value="admin">Admin</option>
-            </select>
-            <input type="text" name="message" placeholder="Type your message..." style="width: 80%">
-            <button type="submit">Send</button>
+        <form method="POST" action="/chat" class="message-form">
+            <input type="email" name="recipient" placeholder="Recipient's email (optional)" class="recipient-input">
+            <input type="text" name="message" placeholder="Type your message..." class="message-input" required>
+            <button type="submit" class="send-button">Send</button>
         </form>
     </div>
 </body>
@@ -167,7 +217,10 @@ Required information for patients:
 - Budget (hourly rate in dollars)
 - Special requirements
 
-Always verify you have the email before storing any other information.`
+Always verify you have the email before storing any other information.
+We need to interrogate the user to get all of these fields, so that we do not
+have odd blanks throughout the application.
+`
 
 // Add these new types and methods
 
@@ -192,6 +245,7 @@ func (app *App) BuildDynamicQuery(q DynamicQuery) (string, []interface{}, error)
 		"caregivers": true,
 		"patients":   true,
 		"matches":    true,
+		"skills":     true,
 	}
 	if !allowedTables[q.Table] {
 		return "", nil, fmt.Errorf("invalid table name: %s", q.Table)
@@ -212,6 +266,7 @@ func (app *App) BuildDynamicQuery(q DynamicQuery) (string, []interface{}, error)
 		"budget":                true,
 		"special_requirements":  true,
 		"status":                true,
+		"skill":                 true,
 	}
 
 	// Build SELECT clause
@@ -356,13 +411,20 @@ var dynamicQueryFunction = map[string]interface{}{
 	},
 }
 
+// Add new type for Skills
+type Skill struct {
+	Email     string    `json:"email"`
+	Skill     string    `json:"skill"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 func NewApp(apiKey string) (*App, error) {
 	db, err := chai.Open(dbFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %v", err)
 	}
 
-	// Create schema including new chat_history table
+	// Update schema without IF NOT EXISTS for indexes and IF EXISTS for ALTER
 	err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS caregivers (
 			email TEXT PRIMARY KEY,
@@ -374,6 +436,7 @@ func NewApp(apiKey string) (*App, error) {
 			certifications TEXT,
 			created_at TIMESTAMP
 		);
+		CREATE INDEX idx_caregivers_email ON caregivers(email);
 
 		CREATE TABLE IF NOT EXISTS patients (
 			email TEXT PRIMARY KEY,
@@ -384,6 +447,7 @@ func NewApp(apiKey string) (*App, error) {
 			special_requirements TEXT,
 			created_at TIMESTAMP
 		);
+		CREATE INDEX idx_patients_email ON patients(email);
 
 		CREATE TABLE IF NOT EXISTS matches (
 			caregiver_email TEXT,
@@ -392,14 +456,26 @@ func NewApp(apiKey string) (*App, error) {
 			created_at TIMESTAMP,
 			PRIMARY KEY (caregiver_email, patient_email)
 		);
+		CREATE INDEX idx_matches_caregiver_email ON matches(caregiver_email);
+		CREATE INDEX idx_matches_patient_email ON matches(patient_email);
 
 		CREATE TABLE IF NOT EXISTS chat_history (
 			email TEXT,
 			role TEXT,
 			content TEXT,
 			created_at TIMESTAMP,
+			recipient TEXT,
 			PRIMARY KEY (email, created_at)
 		);
+		CREATE INDEX idx_chat_history_email ON chat_history(email);
+
+		CREATE TABLE IF NOT EXISTS skills (
+			email TEXT,
+			skill TEXT,
+			created_at TIMESTAMP,
+			PRIMARY KEY (email, skill)
+		);
+		CREATE INDEX idx_skills_email ON skills(email)
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create schema: %v", err)
@@ -421,13 +497,37 @@ func (app *App) Close() error {
 // Database operations
 func (app *App) StoreCaregiver(c *Caregiver) error {
 	c.CreatedAt = time.Now()
-	return app.db.Exec(`
+	err := app.db.Exec(`
 		INSERT INTO caregivers (
 			email, experience, location, availability, 
 			specializations, rate_expectations, certifications, created_at
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, c.Email, c.Experience, c.Location, c.Availability,
-		c.Specializations, c.RateExpectations, c.Certifications, c.CreatedAt)
+		ON CONFLICT (email) DO UPDATE SET
+			experience = ?,
+			location = ?,
+			availability = ?,
+			specializations = ?,
+			rate_expectations = ?,
+			certifications = ?
+	`,
+		c.Email, c.Experience, c.Location, c.Availability,
+		c.Specializations, c.RateExpectations, c.Certifications, c.CreatedAt.Format(time.RFC3339),
+		c.Experience, c.Location, c.Availability,
+		c.Specializations, c.RateExpectations, c.Certifications)
+
+	if err != nil {
+		return fmt.Errorf("failed to store caregiver: %v", err)
+	}
+
+	// Store skills separately
+	skills := []string{"cook", "clean", "transport", "drive"}
+	for _, skill := range skills {
+		if err := app.AddSkill(c.Email, skill); err != nil {
+			return fmt.Errorf("failed to store skill %s: %v", skill, err)
+		}
+	}
+
+	return nil
 }
 
 func (app *App) StorePatient(p *Patient) error {
@@ -546,60 +646,41 @@ func (fc *FunctionCall) GetArguments() (map[string]interface{}, error) {
 	return args, nil
 }
 
+// Update the data structure passed to the template
+type TemplateData struct {
+	Messages  []Message
+	UserEmail string
+}
+
+// Update handleChat function to include user email
 func handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		message := r.FormValue("message")
-		role := r.FormValue("role")
-
-		// Check for email in the message if we don't already have one
-		if chatRoom.userContext.Email == "" {
-			words := strings.Fields(message)
-			for _, word := range words {
-				if strings.Contains(word, "@") {
-					email := strings.Trim(word, ".,!?")
-					chatRoom.userContext.Email = email
-					log.Printf("Stored email context: %s", email)
-
-					// Load previous chat history for this email
-					previousMessages, err := chatRoom.LoadChatHistory(email)
-					if err != nil {
-						log.Printf("Error loading chat history: %v", err)
-					} else {
-						// Prepend previous messages while respecting maxHistory
-						allMessages := append(previousMessages, chatRoom.messages...)
-						if len(allMessages) > chatRoom.maxHistory {
-							allMessages = allMessages[len(allMessages)-chatRoom.maxHistory:]
-						}
-						chatRoom.messages = allMessages
-					}
-
-					// Store initial caregiver record
-					caregiver := &Caregiver{
-						Email:     email,
-						CreatedAt: time.Now(),
-					}
-					if err := chatRoom.StoreCaregiver(caregiver); err != nil {
-						log.Printf("Error storing initial caregiver record: %v", err)
-					}
-					break
-				}
-			}
-		}
-
-		log.Printf("\n=== New Chat Message ===")
-		log.Printf("Role: %s", role)
-		log.Printf("Message: %s", message)
+		recipient := r.FormValue("recipient")
 
 		if message == "" {
 			http.Error(w, "Message cannot be empty", http.StatusBadRequest)
 			return
 		}
 
-		// Add user message
-		if err := chatRoom.AddMessage("user", message); err != nil {
+		// Add message to chat with recipient
+		if err := chatRoom.AddMessageWithRecipient("user", message, recipient); err != nil {
 			log.Printf("Error adding message: %v", err)
 			http.Error(w, "Failed to add message", http.StatusInternalServerError)
 			return
+		}
+
+		// Check if this message contains an email address
+		if chatRoom.userContext.Email == "" {
+			emailRegex := regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)
+			if email := emailRegex.FindString(message); email != "" {
+				chatRoom.userContext.Email = email
+				if err := chatRoom.AddMessageWithRecipient("assistant", fmt.Sprintf("Thank you, %s! I'll remember your email address. How can I help you today?", email), "admin"); err != nil {
+					log.Printf("Error adding assistant message: %v", err)
+				}
+				http.Redirect(w, r, "/", http.StatusSeeOther)
+				return
+			}
 		}
 
 		// Prepare messages with system prompt
@@ -647,7 +728,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 						response += fmt.Sprintf("\nEmail: %s\nLocation: %s\nAvailability: %s\nSpecializations: %s\nRate: $%.2f/hr\n",
 							c.Email, c.Location, c.Availability, c.Specializations, c.RateExpectations)
 					}
-					if err := chatRoom.AddMessage("assistant", response); err != nil {
+					if err := chatRoom.AddMessageWithRecipient("assistant", response, "admin"); err != nil {
 						log.Printf("Error adding assistant message: %v", err)
 					}
 				}
@@ -662,7 +743,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 				if err != nil {
 					log.Printf("Error finding matches: %v", err)
 					response := "I'm sorry, I couldn't find any matching caregivers at this time."
-					if err := chatRoom.AddMessage("assistant", response); err != nil {
+					if err := chatRoom.AddMessageWithRecipient("assistant", response, "admin"); err != nil {
 						log.Printf("Error adding assistant message: %v", err)
 					}
 					return
@@ -677,7 +758,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 						c.Email, c.Location, c.Availability, c.Specializations, c.RateExpectations, c.Experience)
 				}
 
-				if err := chatRoom.AddMessage("assistant", response); err != nil {
+				if err := chatRoom.AddMessageWithRecipient("assistant", response, "admin"); err != nil {
 					log.Printf("Error adding assistant message: %v", err)
 				}
 			}
@@ -688,7 +769,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			}
 			log.Printf("\nAssistant response: %s", assistantResponse)
 
-			if err := chatRoom.AddMessage("assistant", assistantResponse); err != nil {
+			if err := chatRoom.AddMessageWithRecipient("assistant", assistantResponse, "admin"); err != nil {
 				log.Printf("Error adding assistant message: %v", err)
 				http.Error(w, "Failed to add assistant message", http.StatusInternalServerError)
 				return
@@ -699,27 +780,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add a query parameter to filter by role
-	role := r.URL.Query().Get("role")
-	var messages []Message
-	var err error
-
-	if role != "" {
-		messages, err = chatRoom.GetMessagesByRole(role)
-		if err != nil {
-			http.Error(w, "Failed to get messages", http.StatusInternalServerError)
-			return
-		}
-	} else {
-		messages = chatRoom.messages
-	}
-
-	data := struct {
-		Messages []Message
-		Role     string
-	}{
-		Messages: messages,
-		Role:     role,
+	// Prepare template data
+	data := TemplateData{
+		Messages:  chatRoom.messages,
+		UserEmail: chatRoom.userContext.Email,
 	}
 
 	tmpl, err := template.New("chat").Parse(htmlTemplate)
@@ -753,10 +817,44 @@ func (app *App) AddMessage(role, content string) error {
 
 	// If we have an email context, store in database
 	if app.userContext.Email != "" {
+		recipient := "admin" // Default recipient is admin
 		err := app.db.Exec(`
-			INSERT INTO chat_history (email, role, content, created_at)
-			VALUES (?, ?, ?, ?)
-		`, app.userContext.Email, role, content, time.Now())
+			INSERT INTO chat_history (email, role, content, created_at, recipient)
+			VALUES (?, ?, ?, ?, ?)
+		`, app.userContext.Email, role, content, time.Now(), recipient)
+		if err != nil {
+			return fmt.Errorf("failed to store chat history: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// Add new method with recipient parameter
+func (app *App) AddMessageWithRecipient(role, content, recipient string) error {
+	// Create new message
+	msg := Message{
+		Role:    role,
+		Content: content,
+	}
+
+	// Add to current session
+	app.messages = append(app.messages, msg)
+
+	// Trim history if it exceeds maxHistory
+	if len(app.messages) > app.maxHistory {
+		app.messages = app.messages[len(app.messages)-app.maxHistory:]
+	}
+
+	// If we have an email context, store in database
+	if app.userContext.Email != "" {
+		if recipient == "" {
+			recipient = "admin"
+		}
+		err := app.db.Exec(`
+			INSERT INTO chat_history (email, role, content, created_at, recipient)
+			VALUES (?, ?, ?, ?, ?)
+		`, app.userContext.Email, role, content, time.Now(), recipient)
 		if err != nil {
 			return fmt.Errorf("failed to store chat history: %v", err)
 		}
@@ -934,6 +1032,43 @@ func handleDynamicQuery(args map[string]interface{}) (string, error) {
 	}
 
 	return response.String(), nil
+}
+
+// Add methods to manage skills
+func (app *App) AddSkill(email, skill string) error {
+	return app.db.Exec(`
+		INSERT INTO skills (email, skill, created_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT (email, skill) DO NOTHING
+	`, email, skill, time.Now())
+}
+
+func (app *App) GetSkills(email string) ([]string, error) {
+	var skills []string
+	result, err := app.db.Query("SELECT skill FROM skills WHERE email = ?", email)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query skills: %v", err)
+	}
+	defer result.Close()
+
+	err = result.Iterate(func(r *chai.Row) error {
+		var skill string
+		if err := r.Scan(&skill); err != nil {
+			return fmt.Errorf("failed to scan skill: %v", err)
+		}
+		skills = append(skills, skill)
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to iterate skills: %v", err)
+	}
+
+	return skills, nil
+}
+
+func (app *App) RemoveSkill(email, skill string) error {
+	return app.db.Exec("DELETE FROM skills WHERE email = ? AND skill = ?", email, skill)
 }
 
 func main() {
