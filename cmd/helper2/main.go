@@ -83,6 +83,7 @@ type App struct {
 	messages    []Message
 	apiKey      string
 	userContext UserContext
+	maxHistory  int
 }
 
 var (
@@ -168,14 +169,200 @@ Required information for patients:
 
 Always verify you have the email before storing any other information.`
 
+// Add these new types and methods
+
+type QueryFilter struct {
+	Field    string
+	Operator string
+	Value    interface{}
+}
+
+type DynamicQuery struct {
+	Table   string
+	Fields  []string
+	Filters []QueryFilter
+	OrderBy string
+	Limit   int
+}
+
+// BuildDynamicQuery safely constructs a parameterized SQL query
+func (app *App) BuildDynamicQuery(q DynamicQuery) (string, []interface{}, error) {
+	// Validate table name against whitelist
+	allowedTables := map[string]bool{
+		"caregivers": true,
+		"patients":   true,
+		"matches":    true,
+	}
+	if !allowedTables[q.Table] {
+		return "", nil, fmt.Errorf("invalid table name: %s", q.Table)
+	}
+
+	// Validate field names against whitelist
+	allowedFields := map[string]bool{
+		"email":                 true,
+		"experience":            true,
+		"location":              true,
+		"availability":          true,
+		"specializations":       true,
+		"rate_expectations":     true,
+		"certifications":        true,
+		"created_at":            true,
+		"care_needs":            true,
+		"schedule_requirements": true,
+		"budget":                true,
+		"special_requirements":  true,
+		"status":                true,
+	}
+
+	// Build SELECT clause
+	selectFields := "*"
+	if len(q.Fields) > 0 {
+		validFields := make([]string, 0)
+		for _, f := range q.Fields {
+			if allowedFields[f] {
+				validFields = append(validFields, f)
+			}
+		}
+		if len(validFields) > 0 {
+			selectFields = strings.Join(validFields, ", ")
+		}
+	}
+
+	// Build WHERE clause and params
+	var whereConditions []string
+	var params []interface{}
+	allowedOperators := map[string]bool{
+		"=":           true,
+		">":           true,
+		"<":           true,
+		">=":          true,
+		"<=":          true,
+		"LIKE":        true,
+		"NOT LIKE":    true,
+		"IN":          true,
+		"NOT IN":      true,
+		"IS NULL":     true,
+		"IS NOT NULL": true,
+	}
+
+	for _, filter := range q.Filters {
+		if !allowedFields[filter.Field] || !allowedOperators[filter.Operator] {
+			continue
+		}
+
+		switch filter.Operator {
+		case "IS NULL", "IS NOT NULL":
+			whereConditions = append(whereConditions,
+				fmt.Sprintf("%s %s", filter.Field, filter.Operator))
+		default:
+			whereConditions = append(whereConditions,
+				fmt.Sprintf("%s %s ?", filter.Field, filter.Operator))
+			params = append(params, filter.Value)
+		}
+	}
+
+	// Construct final query
+	query := fmt.Sprintf("SELECT %s FROM %s", selectFields, q.Table)
+	if len(whereConditions) > 0 {
+		query += " WHERE " + strings.Join(whereConditions, " AND ")
+	}
+	if q.OrderBy != "" && allowedFields[strings.TrimSuffix(q.OrderBy, " DESC")] {
+		query += " ORDER BY " + q.OrderBy
+	}
+	if q.Limit > 0 {
+		query += fmt.Sprintf(" LIMIT %d", q.Limit)
+	}
+
+	return query, params, nil
+}
+
+// ExecuteDynamicQuery executes a dynamic query and returns results
+func (app *App) ExecuteDynamicQuery(q DynamicQuery) ([]map[string]interface{}, error) {
+	query, params, err := app.BuildDynamicQuery(q)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := app.db.Query(query, params...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute query: %v", err)
+	}
+	defer result.Close()
+
+	var results []map[string]interface{}
+	err = result.Iterate(func(r *chai.Row) error {
+		// Get column names
+		cols, err := r.Columns()
+		if err != nil {
+			return err
+		}
+
+		// Create a slice of interface{} to hold the values
+		values := make([]interface{}, len(cols))
+		valuePtrs := make([]interface{}, len(cols))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		// Scan the result into the values
+		if err := r.Scan(valuePtrs...); err != nil {
+			return err
+		}
+
+		// Create a map for this row
+		row := make(map[string]interface{})
+		for i, col := range cols {
+			row[col] = values[i]
+		}
+		results = append(results, row)
+		return nil
+	})
+
+	return results, err
+}
+
+// Fix the dynamicQueryFunction definition
+var dynamicQueryFunction = map[string]interface{}{
+	"name":        "execute_dynamic_query",
+	"description": "Execute a dynamic database query with filters",
+	"parameters": map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"table": map[string]interface{}{
+				"type": "string",
+				"enum": []string{"caregivers", "patients", "matches"},
+			},
+			"fields": map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"type": "string",
+				},
+			},
+			"filters": map[string]interface{}{
+				"type": "array",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"field":    map[string]interface{}{"type": "string"},
+						"operator": map[string]interface{}{"type": "string"},
+						"value":    map[string]interface{}{"type": "string"},
+					},
+				},
+			},
+			"order_by": map[string]interface{}{"type": "string"},
+			"limit":    map[string]interface{}{"type": "integer"},
+		},
+		"required": []string{"table"},
+	},
+}
+
 func NewApp(apiKey string) (*App, error) {
-	// Initialize database with the specific file
 	db, err := chai.Open(dbFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %v", err)
 	}
 
-	// Create schema
+	// Create schema including new chat_history table
 	err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS caregivers (
 			email TEXT PRIMARY KEY,
@@ -205,6 +392,14 @@ func NewApp(apiKey string) (*App, error) {
 			created_at TIMESTAMP,
 			PRIMARY KEY (caregiver_email, patient_email)
 		);
+
+		CREATE TABLE IF NOT EXISTS chat_history (
+			email TEXT,
+			role TEXT,
+			content TEXT,
+			created_at TIMESTAMP,
+			PRIMARY KEY (email, created_at)
+		);
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create schema: %v", err)
@@ -215,6 +410,7 @@ func NewApp(apiKey string) (*App, error) {
 		messages:    make([]Message, 0),
 		apiKey:      apiKey,
 		userContext: UserContext{},
+		maxHistory:  100,
 	}, nil
 }
 
@@ -263,6 +459,21 @@ func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 				"properties": map[string]interface{}{},
 			},
 		},
+		{
+			"name":        "find_matching_caregivers",
+			"description": "Find caregivers matching a patient's requirements",
+			"parameters": map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"patient_email": map[string]interface{}{
+						"type":        "string",
+						"description": "Email of the patient seeking care",
+					},
+				},
+				"required": []string{"patient_email"},
+			},
+		},
+		dynamicQueryFunction,
 	}
 
 	requestBody := map[string]interface{}{
@@ -318,24 +529,21 @@ func prettyPrint(b []byte) string {
 	return out.String()
 }
 
-// Modify the GetArguments method to handle both string array and object formats
-func (fc *FunctionCall) GetArguments() ([]string, error) {
-	// First unmarshal the string-encoded JSON
-	var jsonStr string
-	if err := json.Unmarshal(fc.Arguments, &jsonStr); err == nil {
-		// Then try to unmarshal the inner JSON string
-		var argsWrapper struct {
-			Arguments []string `json:"arguments"`
+// Update the GetArguments method to handle the direct JSON object format
+func (fc *FunctionCall) GetArguments() (map[string]interface{}, error) {
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(fc.Arguments), &args); err != nil {
+		// Try parsing as a string first
+		var strArgs string
+		if err := json.Unmarshal(fc.Arguments, &strArgs); err != nil {
+			return nil, fmt.Errorf("failed to parse arguments: %v", err)
 		}
-		if err := json.Unmarshal([]byte(jsonStr), &argsWrapper); err == nil {
-			return argsWrapper.Arguments, nil
+		// Then parse the string as JSON
+		if err := json.Unmarshal([]byte(strArgs), &args); err != nil {
+			return nil, fmt.Errorf("failed to parse string arguments: %v", err)
 		}
-		log.Printf("Failed to parse inner JSON: %v", err)
 	}
-
-	// If the above fails, log the raw arguments for debugging
-	log.Printf("Raw arguments received: %s", string(fc.Arguments))
-	return nil, fmt.Errorf("failed to parse arguments: %v", string(fc.Arguments))
+	return args, nil
 }
 
 func handleChat(w http.ResponseWriter, r *http.Request) {
@@ -351,6 +559,19 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 					email := strings.Trim(word, ".,!?")
 					chatRoom.userContext.Email = email
 					log.Printf("Stored email context: %s", email)
+
+					// Load previous chat history for this email
+					previousMessages, err := chatRoom.LoadChatHistory(email)
+					if err != nil {
+						log.Printf("Error loading chat history: %v", err)
+					} else {
+						// Prepend previous messages while respecting maxHistory
+						allMessages := append(previousMessages, chatRoom.messages...)
+						if len(allMessages) > chatRoom.maxHistory {
+							allMessages = allMessages[len(allMessages)-chatRoom.maxHistory:]
+						}
+						chatRoom.messages = allMessages
+					}
 
 					// Store initial caregiver record
 					caregiver := &Caregiver{
@@ -430,6 +651,35 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 						log.Printf("Error adding assistant message: %v", err)
 					}
 				}
+			case "find_matching_caregivers":
+				patientEmail, ok := args["patient_email"].(string)
+				if !ok {
+					log.Printf("Error: patient_email not found in arguments")
+					return
+				}
+
+				matches, err := chatRoom.FindMatchingCaregivers(patientEmail)
+				if err != nil {
+					log.Printf("Error finding matches: %v", err)
+					response := "I'm sorry, I couldn't find any matching caregivers at this time."
+					if err := chatRoom.AddMessage("assistant", response); err != nil {
+						log.Printf("Error adding assistant message: %v", err)
+					}
+					return
+				}
+
+				response := "Here are the caregivers that match your requirements:\n"
+				if len(matches) == 0 {
+					response = "I couldn't find any caregivers matching your exact requirements. Consider adjusting your criteria."
+				}
+				for _, c := range matches {
+					response += fmt.Sprintf("\nCaregiver: %s\nLocation: %s\nAvailability: %s\nSpecializations: %s\nRate: $%.2f/hr\nExperience: %s\n",
+						c.Email, c.Location, c.Availability, c.Specializations, c.RateExpectations, c.Experience)
+				}
+
+				if err := chatRoom.AddMessage("assistant", response); err != nil {
+					log.Printf("Error adding assistant message: %v", err)
+				}
 			}
 		} else if len(chatResp.Choices) > 0 {
 			assistantResponse := chatResp.Choices[0].Message.Content
@@ -487,10 +737,31 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 
 // AddMessage adds a new message to the app's message history
 func (app *App) AddMessage(role, content string) error {
-	app.messages = append(app.messages, Message{
+	// Create new message
+	msg := Message{
 		Role:    role,
 		Content: content,
-	})
+	}
+
+	// Add to current session
+	app.messages = append(app.messages, msg)
+
+	// Trim history if it exceeds maxHistory
+	if len(app.messages) > app.maxHistory {
+		app.messages = app.messages[len(app.messages)-app.maxHistory:]
+	}
+
+	// If we have an email context, store in database
+	if app.userContext.Email != "" {
+		err := app.db.Exec(`
+			INSERT INTO chat_history (email, role, content, created_at)
+			VALUES (?, ?, ?, ?)
+		`, app.userContext.Email, role, content, time.Now())
+		if err != nil {
+			return fmt.Errorf("failed to store chat history: %v", err)
+		}
+	}
+
 	return nil
 }
 
@@ -528,6 +799,141 @@ func (app *App) ListCaregivers() ([]Caregiver, error) {
 	}
 
 	return caregivers, nil
+}
+
+// Add this new function to App struct
+func (app *App) FindMatchingCaregivers(patientEmail string) ([]Caregiver, error) {
+	// First get the patient's requirements
+	var patient Patient
+	row, err := app.db.QueryRow("SELECT * FROM patients WHERE email = ?", patientEmail)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query patient: %v", err)
+	}
+
+	// Add error handling for when patient is not found
+	if row == nil {
+		return nil, fmt.Errorf("patient not found: %s", patientEmail)
+	}
+
+	err = row.Scan(&patient.Email, &patient.CareNeeds, &patient.Location,
+		&patient.ScheduleRequirements, &patient.Budget, &patient.SpecialRequirements, &patient.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find patient: %v", err)
+	}
+
+	// Query caregivers matching criteria
+	result, err := app.db.Query(`
+		SELECT * FROM caregivers 
+		WHERE location = ? 
+		AND rate_expectations <= ?
+		AND availability != ''`, // Only return caregivers with availability set
+		patient.Location, patient.Budget)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query caregivers: %v", err)
+	}
+	defer result.Close()
+
+	var matches []Caregiver
+	err = result.Iterate(func(r *chai.Row) error {
+		var c Caregiver
+		if err := r.Scan(&c.Email, &c.Experience, &c.Location, &c.Availability,
+			&c.Specializations, &c.RateExpectations, &c.Certifications, &c.CreatedAt); err != nil {
+			return fmt.Errorf("failed to scan caregiver: %v", err)
+		}
+		matches = append(matches, c)
+		return nil
+	})
+
+	return matches, err
+}
+
+// Add new method to load chat history
+func (app *App) LoadChatHistory(email string) ([]Message, error) {
+	var messages []Message
+
+	result, err := app.db.Query(`
+		SELECT role, content 
+		FROM chat_history 
+		WHERE email = ? 
+		ORDER BY created_at DESC 
+		LIMIT ?
+	`, email, app.maxHistory)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query chat history: %v", err)
+	}
+	defer result.Close()
+
+	err = result.Iterate(func(r *chai.Row) error {
+		var msg Message
+		if err := r.Scan(&msg.Role, &msg.Content); err != nil {
+			return fmt.Errorf("failed to scan message: %v", err)
+		}
+		messages = append(messages, msg)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to iterate chat history: %v", err)
+	}
+
+	// Reverse the messages so they're in chronological order
+	for i := len(messages)/2 - 1; i >= 0; i-- {
+		opp := len(messages) - 1 - i
+		messages[i], messages[opp] = messages[opp], messages[i]
+	}
+
+	return messages, nil
+}
+
+// Add handler for dynamic queries in handleChat
+func handleDynamicQuery(args map[string]interface{}) (string, error) {
+	// Parse the dynamic query parameters
+	query := DynamicQuery{
+		Table: args["table"].(string),
+	}
+
+	if fields, ok := args["fields"].([]interface{}); ok {
+		for _, f := range fields {
+			query.Fields = append(query.Fields, f.(string))
+		}
+	}
+
+	if filters, ok := args["filters"].([]interface{}); ok {
+		for _, f := range filters {
+			filter := f.(map[string]interface{})
+			query.Filters = append(query.Filters, QueryFilter{
+				Field:    filter["field"].(string),
+				Operator: filter["operator"].(string),
+				Value:    filter["value"],
+			})
+		}
+	}
+
+	if orderBy, ok := args["order_by"].(string); ok {
+		query.OrderBy = orderBy
+	}
+
+	if limit, ok := args["limit"].(float64); ok {
+		query.Limit = int(limit)
+	}
+
+	// Execute the query
+	results, err := chatRoom.ExecuteDynamicQuery(query)
+	if err != nil {
+		return "", err
+	}
+
+	// Format results as readable text
+	var response strings.Builder
+	response.WriteString(fmt.Sprintf("Query results from %s:\n\n", query.Table))
+
+	for _, row := range results {
+		for field, value := range row {
+			response.WriteString(fmt.Sprintf("%s: %v\n", field, value))
+		}
+		response.WriteString("\n")
+	}
+
+	return response.String(), nil
 }
 
 func main() {
