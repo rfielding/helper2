@@ -94,8 +94,7 @@ const htmlTemplate = `
 func (cr *ChatRoom) initProlog() error {
 	// Define our message predicate
 	err := cr.pl.Exec(`
-		% message(Role, Content, Timestamp).
-		:- dynamic message/3.
+		:- dynamic(message/3).
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to initialize prolog: %v", err)
