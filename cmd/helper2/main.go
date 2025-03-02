@@ -716,16 +716,6 @@ func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 	return &chatResp, nil
 }
 
-// Helper function to pretty print JSON
-func prettyPrint(b []byte) string {
-	var out bytes.Buffer
-	err := json.Indent(&out, b, "", "  ")
-	if err != nil {
-		return string(b)
-	}
-	return out.String()
-}
-
 // Update the GetArguments method to handle the direct JSON object format
 func (fc *FunctionCall) GetArguments() (map[string]interface{}, error) {
 	var args map[string]interface{}
@@ -1079,58 +1069,6 @@ func (app *App) LoadChatHistory(email string) ([]Message, error) {
 	return messages, nil
 }
 
-// Add handler for dynamic queries in handleChat
-func handleDynamicQuery(args map[string]interface{}) (string, error) {
-	// Parse the dynamic query parameters
-	query := DynamicQuery{
-		Table: args["table"].(string),
-	}
-
-	if fields, ok := args["fields"].([]interface{}); ok {
-		for _, f := range fields {
-			query.Fields = append(query.Fields, f.(string))
-		}
-	}
-
-	if filters, ok := args["filters"].([]interface{}); ok {
-		for _, f := range filters {
-			filter := f.(map[string]interface{})
-			query.Filters = append(query.Filters, QueryFilter{
-				Field:    filter["field"].(string),
-				Operator: filter["operator"].(string),
-				Value:    filter["value"],
-			})
-		}
-	}
-
-	if orderBy, ok := args["order_by"].(string); ok {
-		query.OrderBy = orderBy
-	}
-
-	if limit, ok := args["limit"].(float64); ok {
-		query.Limit = int(limit)
-	}
-
-	// Execute the query
-	results, err := chatRoom.ExecuteDynamicQuery(query)
-	if err != nil {
-		return "", err
-	}
-
-	// Format results as readable text
-	var response strings.Builder
-	response.WriteString(fmt.Sprintf("Query results from %s:\n\n", query.Table))
-
-	for _, row := range results {
-		for field, value := range row {
-			response.WriteString(fmt.Sprintf("%s: %v\n", field, value))
-		}
-		response.WriteString("\n")
-	}
-
-	return response.String(), nil
-}
-
 // Add methods to manage skills
 func (app *App) AddSkill(email, skill string) error {
 	return app.db.Exec(`
@@ -1213,27 +1151,6 @@ func (app *App) AddMessageWithRecipient(email, role, content, recipient string) 
 		return fmt.Errorf("failed to store message: %v", err)
 	}
 
-	return nil
-}
-
-// Add this to ensure the chat_history table exists
-func (app *App) createSchema() error {
-	err := app.db.Exec(`
-		CREATE TABLE IF NOT EXISTS chat_history (
-			email TEXT,
-			role TEXT,
-			content TEXT,
-			recipient TEXT,
-			created_at TIMESTAMP,
-			PRIMARY KEY (email, created_at)
-		);
-		CREATE INDEX IF NOT EXISTS idx_chat_history_email ON chat_history(email);
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to create chat_history table: %v", err)
-	}
-
-	// ... rest of schema creation ...
 	return nil
 }
 
@@ -1369,22 +1286,6 @@ func formatCaregiverList(caregivers []Caregiver) string {
 		sb.WriteString(fmt.Sprintf("  Rate: $%.2f/hour\n", c.RateExpectations))
 		sb.WriteString(fmt.Sprintf("  Availability: %s\n", c.Availability))
 		sb.WriteString(fmt.Sprintf("  Specializations: %s\n\n", c.Specializations))
-	}
-
-	return sb.String()
-}
-
-func formatPatientMatches(patients []Patient) string {
-	var sb strings.Builder
-	sb.WriteString("Here are the matching patients:\n\n")
-
-	for _, p := range patients {
-		sb.WriteString(fmt.Sprintf("• <a href='/profile?email=%s'>%s</a>\n",
-			url.QueryEscape(p.Email), p.Email))
-		sb.WriteString(fmt.Sprintf("  Location: %s\n", p.Location))
-		sb.WriteString(fmt.Sprintf("  Budget: $%.2f/hour\n", p.Budget))
-		sb.WriteString(fmt.Sprintf("  Care Needs: %s\n", p.CareNeeds))
-		sb.WriteString(fmt.Sprintf("  Schedule Requirements: %s\n\n", p.ScheduleRequirements))
 	}
 
 	return sb.String()
