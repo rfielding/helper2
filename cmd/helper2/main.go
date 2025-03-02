@@ -1371,7 +1371,7 @@ func formatPatientList(patients []Patient) string {
 		}
 
 		sb.WriteString("<li class='match-item'>")
-		sb.WriteString("<img src='/static/images/patient-avatar.png' alt='Patient Avatar' class='match-avatar'>")
+		sb.WriteString("<img src='/static/images/default-avatar.png' alt='Patient Avatar' class='match-avatar'>")
 		sb.WriteString("<div class='match-details'>")
 		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", p.Name))
 		sb.WriteString(fmt.Sprintf("<span>✉️ Email: %s</span><br>", p.Email))
@@ -1417,7 +1417,7 @@ func formatCaregiverList(caregivers []Caregiver) string {
 		}
 
 		sb.WriteString("<li class='match-item'>")
-		sb.WriteString("<img src='/static/images/caregiver-avatar.png' alt='Caregiver Avatar' class='match-avatar'>")
+		sb.WriteString("<img src='/static/images/default-avatar.png' class='match-avatar'>")
 		sb.WriteString("<div class='match-details'>")
 		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", c.Name))
 		sb.WriteString(fmt.Sprintf("<span>✉️ Email: %s</span><br>", c.Email))
