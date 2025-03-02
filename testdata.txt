@@ -1,54 +1,109 @@
-patient1@example.com: Hi, I need a caregiver in Alexandria
-patient1@example.com: I need help with daily activities and medication management
-patient1@example.com: I can pay up to $30/hour
-patient1@example.com: Monday through Friday, mornings
+caregiver1@example.com: Looking to provide care services
+caregiver1@example.com: 5 years experience in elderly care
+caregiver1@example.com: Located in Alexandria, available Monday-Friday
+caregiver1@example.com: CNA certified, specializing in elderly care
+caregiver1@example.com: Rate $25/hour
 
-patient2@example.com: Looking for care in Fairfax
-patient2@example.com: Need assistance with physical therapy and mobility
-patient2@example.com: Budget is $35 per hour
-patient2@example.com: Weekends only
+caregiver2@example.com: I'd like to offer care services
+caregiver2@example.com: 3 years experience in rehabilitation
+caregiver2@example.com: Based in Arlington, available weekends
+caregiver2@example.com: Physical Therapy Assistant certification
+caregiver2@example.com: Specialize in physical therapy and post-surgery care
+caregiver2@example.com: Rate $30/hour
 
-caregiver1@example.com: I'd like to register as a caregiver
-caregiver1@example.com: I have 5 years experience in elderly care and I'm CPR certified
-caregiver1@example.com: I'm in Alexandria and available Monday-Friday
-caregiver1@example.com: My rate is $25/hour
-caregiver1@example.com: I specialize in medication management and daily assistance
-
-caregiver2@example.com: Hi, I want to offer my caregiving services
-caregiver2@example.com: I'm a certified nursing assistant with 3 years experience
-caregiver2@example.com: Located in Fairfax, available weekends
-caregiver2@example.com: Looking for $30/hour
-caregiver2@example.com: Specialized in physical therapy and post-surgery care
-
-patient3@example.com: Need caregiver in McLean
-patient3@example.com: Looking for post-surgery care
-patient3@example.com: Can pay $40/hour
-patient3@example.com: Need evening care
-
-caregiver3@example.com: Registering as a caregiver
-caregiver3@example.com: RN with 8 years experience in McLean
-caregiver3@example.com: Available evenings and nights
+caregiver3@example.com: Interested in providing care
+caregiver3@example.com: 8 years nursing experience
+caregiver3@example.com: Located in Fairfax, available evenings and nights
+caregiver3@example.com: RN certified, medical care specialist
 caregiver3@example.com: Rate $35/hour
-caregiver3@example.com: Specialized in post-surgery and wound care
-
-patient4@example.com: Seeking care in Arlington
-patient4@example.com: Need dementia care support
-patient4@example.com: Budget $45/hour
-patient4@example.com: Full-time care needed
 
 caregiver4@example.com: Want to provide care services
-caregiver4@example.com: 6 years experience with dementia patients
-caregiver4@example.com: Based in Arlington, available full-time
-caregiver4@example.com: Charging $40/hour
-caregiver4@example.com: Certified in dementia care
+caregiver4@example.com: 6 years in memory care
+caregiver4@example.com: Alexandria based, available full-time
+caregiver4@example.com: Dementia Care Specialist certification
+caregiver4@example.com: Specializing in dementia care
+caregiver4@example.com: Rate $28/hour
 
-patient5@example.com: Need caregiver in Reston
-patient5@example.com: Companionship and light housekeeping
-patient5@example.com: Can afford $25/hour
-patient5@example.com: Part-time, afternoons
+caregiver6@example.com: Looking to provide care
+caregiver6@example.com: 4 years pediatric care experience
+caregiver6@example.com: Springfield area, part-time availability
+caregiver6@example.com: LPN certified, pediatric specialist
+caregiver6@example.com: Rate $27/hour
 
-caregiver5@example.com: Looking to provide care services
-caregiver5@example.com: 2 years experience in senior care
-caregiver5@example.com: Located in Reston, flexible schedule
-caregiver5@example.com: Rate $22/hour
-caregiver5@example.com: Focus on companionship and daily assistance
+caregiver7@example.com: Offering care services
+caregiver7@example.com: 7 years hospice care experience
+caregiver7@example.com: McLean location, 24/7 live-in available
+caregiver7@example.com: Hospice Care certified
+caregiver7@example.com: Specializing in end-of-life care
+caregiver7@example.com: Rate $32/hour
+
+caregiver8@example.com: Want to provide care
+caregiver8@example.com: 3 years disability care experience
+caregiver8@example.com: Located in Reston, weekday mornings
+caregiver8@example.com: Special Needs Care certified
+caregiver8@example.com: Rate $26/hour
+
+patient1@example.com: Need care services
+patient1@example.com: Looking for elderly care and medication management
+patient1@example.com: Located in Alexandria
+patient1@example.com: Need full-time weekdays
+patient1@example.com: Budget $30/hour
+patient1@example.com: Must have experience with diabetes care
+
+patient2@example.com: Seeking care assistance
+patient2@example.com: Need post-surgery recovery help
+patient2@example.com: Arlington area
+patient2@example.com: Temporary - 3 months
+patient2@example.com: Can pay $35/hour
+patient2@example.com: Physical therapy experience required
+
+patient3@example.com: Need medical care
+patient3@example.com: Require 24/7 medical supervision
+patient3@example.com: Located in Fairfax
+patient3@example.com: Need live-in care
+patient3@example.com: Budget $40/hour
+patient3@example.com: Must be RN
+
+patient4@example.com: Looking for caregiver
+patient4@example.com: Need memory care and daily activities assistance
+patient4@example.com: McLean location
+patient4@example.com: Evenings and weekends needed
+patient4@example.com: Budget $32/hour
+patient4@example.com: Must have dementia care experience
+
+patient6@example.com: Need special needs care
+patient6@example.com: Pediatric special needs care required
+patient6@example.com: Springfield area
+patient6@example.com: After school hours
+patient6@example.com: Budget $28/hour
+patient6@example.com: Experience with autism needed
+
+patient7@example.com: Seeking companion care
+patient7@example.com: Need senior companionship
+patient7@example.com: Reston location
+patient7@example.com: Morning visits needed
+patient7@example.com: Budget $26/hour
+patient7@example.com: Must provide transportation
+
+patient8@example.com: Need recovery assistance
+patient8@example.com: Looking for recovery help
+patient8@example.com: Alexandria area
+patient8@example.com: Flexible hours needed
+patient8@example.com: Budget $29/hour
+patient8@example.com: Physical therapy background preferred
+
+caregiver1@example.com: match
+caregiver2@example.com: match
+caregiver3@example.com: match
+caregiver4@example.com: match
+caregiver6@example.com: match
+caregiver7@example.com: match
+caregiver8@example.com: match
+
+patient1@example.com: match
+patient2@example.com: match
+patient3@example.com: match
+patient4@example.com: match
+patient6@example.com: match
+patient7@example.com: match
+patient8@example.com: match

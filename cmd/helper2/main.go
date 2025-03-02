@@ -556,6 +556,9 @@ func (app *App) CreateMatch(m *Match) error {
 }
 
 func callOpenAI(req ChatRequest) (*ChatResponse, error) {
+	// Add logging before API call
+	log.Printf("Calling OpenAI API...")
+
 	functionDefs := []map[string]interface{}{
 		{
 			"name":        "store_caregiver",
@@ -674,7 +677,7 @@ func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 	}
 
 	// Log the request being sent to OpenAI
-	log.Printf("Sending request to OpenAI:\n%s", prettyPrint(jsonData))
+	log.Printf("Sending request to OpenAI...")
 
 	// Make the API call to OpenAI
 	request, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewBuffer(jsonData))
@@ -685,17 +688,25 @@ func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", os.Getenv("OPENAI_API_KEY")))
 
-	client := &http.Client{}
+	// Add timeout to the client
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	log.Printf("Waiting for OpenAI response...")
 	resp, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make API request: %v", err)
 	}
 	defer resp.Body.Close()
 
-	// Log the response from OpenAI
-	respBody, _ := io.ReadAll(resp.Body)
-	resp.Body = io.NopCloser(bytes.NewBuffer(respBody))
-	log.Printf("Response from OpenAI:\n%s", prettyPrint(respBody))
+	log.Printf("Received response from OpenAI")
+
+	// Read the response body
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %v", err)
+	}
 
 	var chatResp ChatResponse
 	if err := json.NewDecoder(bytes.NewBuffer(respBody)).Decode(&chatResp); err != nil {
@@ -781,84 +792,10 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Process OpenAI response
-		if len(chatResp.Choices) > 0 {
-			choice := chatResp.Choices[0].Message
-			if choice.FunctionCall != nil {
-				args, err := choice.FunctionCall.GetArguments()
-				if err != nil {
-					log.Printf("Error parsing function arguments: %v", err)
-					http.Error(w, "Failed to process function call", http.StatusInternalServerError)
-					return
-				}
-
-				var response string
-				switch choice.FunctionCall.Name {
-				case "list_patients":
-					patients, err := chatRoom.ListPatients()
-					if err != nil {
-						response = fmt.Sprintf("Error listing patients: %v", err)
-					} else {
-						response = formatPatientList(patients)
-					}
-
-				case "list_caregivers":
-					caregivers, err := chatRoom.ListCaregivers()
-					if err != nil {
-						response = fmt.Sprintf("Error listing caregivers: %v", err)
-					} else {
-						response = formatCaregiverList(caregivers)
-					}
-
-				case "find_matching_caregivers":
-					patientEmail := getStringArg(args, "patient_email", userEmail) // Use current user's email if not specified
-					caregivers, err := chatRoom.FindMatchingCaregivers(patientEmail)
-					if err != nil {
-						response = fmt.Sprintf("Error finding matches: %v", err)
-					} else {
-						response = formatCaregiverList(caregivers)
-					}
-
-				case "store_caregiver":
-					caregiver := &Caregiver{
-						Email:            getStringArg(args, "email", ""),
-						Experience:       getStringArg(args, "experience", ""),
-						Location:         getStringArg(args, "location", ""),
-						Availability:     getStringArg(args, "availability", ""),
-						Specializations:  getStringArg(args, "specializations", ""),
-						RateExpectations: getFloatArg(args, "rate_expectations", 0),
-						Certifications:   getStringArg(args, "certifications", ""),
-					}
-					if err := chatRoom.StoreCaregiver(caregiver); err != nil {
-						log.Printf("Error storing caregiver %s: %v", caregiver.Email, err)
-						response = fmt.Sprintf("Error storing caregiver: %v", err)
-					}
-
-				case "store_patient":
-					patient := &Patient{
-						Email:                getStringArg(args, "email", ""),
-						CareNeeds:            getStringArg(args, "care_needs", ""),
-						Location:             getStringArg(args, "location", ""),
-						ScheduleRequirements: getStringArg(args, "schedule_requirements", ""),
-						Budget:               getFloatArg(args, "budget", 0),
-						SpecialRequirements:  getStringArg(args, "special_requirements", ""),
-					}
-					if err := chatRoom.StorePatient(patient); err != nil {
-						log.Printf("Error storing patient %s: %v", patient.Email, err)
-						response = fmt.Sprintf("Error storing patient: %v", err)
-					}
-
-				default:
-					response = "Function call not recognized"
-				}
-
-				if err := chatRoom.AddMessageWithRecipient(userEmail, "assistant", response, "admin"); err != nil {
-					log.Printf("Error adding function response: %v", err)
-				}
-			} else if choice.Content != "" {
-				if err := chatRoom.AddMessageWithRecipient(userEmail, "assistant", choice.Content, "admin"); err != nil {
-					log.Printf("Error adding assistant response: %v", err)
-				}
-			}
+		if err := handleOpenAIResponse(chatResp, userEmail, chatRoom); err != nil {
+			log.Printf("Error handling OpenAI response: %v", err)
+			http.Error(w, "Failed to process OpenAI response", http.StatusInternalServerError)
+			return
 		}
 
 		http.Redirect(w, r, fmt.Sprintf("/?email=%s", url.QueryEscape(userEmail)), http.StatusSeeOther)
@@ -1012,12 +949,16 @@ func (app *App) FindMatchingCaregivers(patientEmail string) ([]Caregiver, error)
 		return nil, fmt.Errorf("patient not found")
 	}
 
-	// Now find matching caregivers
-	// For now, match based on location and budget
+	log.Printf("Finding caregivers for patient %s (Location: %s, Budget: $%.2f)",
+		patient.Email, patient.Location, patient.Budget)
+
+	// Fixed query syntax by removing the CASE statement
 	result, err = app.db.Query(`
 		SELECT * FROM caregivers 
-		WHERE location LIKE ? 
+		WHERE LOWER(location) LIKE LOWER(?) 
 		AND rate_expectations <= ?
+		ORDER BY 
+			rate_expectations ASC
 	`, "%"+patient.Location+"%", patient.Budget)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query matching caregivers: %v", err)
@@ -1039,6 +980,66 @@ func (app *App) FindMatchingCaregivers(patientEmail string) ([]Caregiver, error)
 	}
 
 	return caregivers, nil
+}
+
+// FindMatchingPatients finds patients that match a caregiver's criteria
+func (app *App) FindMatchingPatients(caregiverEmail string) ([]Patient, error) {
+	// First get the caregiver's details
+	var caregiver Caregiver
+	result, err := app.db.Query("SELECT * FROM caregivers WHERE email = ?", caregiverEmail)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query caregiver: %v", err)
+	}
+	defer result.Close()
+
+	found := false
+	err = result.Iterate(func(r *chai.Row) error {
+		if err := r.Scan(&caregiver.Email, &caregiver.Experience, &caregiver.Location,
+			&caregiver.Availability, &caregiver.Specializations, &caregiver.RateExpectations,
+			&caregiver.Certifications, &caregiver.CreatedAt); err != nil {
+			return fmt.Errorf("failed to scan caregiver: %v", err)
+		}
+		found = true
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("caregiver not found")
+	}
+
+	log.Printf("Finding patients for caregiver %s (Location: %s, Rate: $%.2f)",
+		caregiver.Email, caregiver.Location, caregiver.RateExpectations)
+
+	// Fixed query syntax by removing the CASE statement
+	result, err = app.db.Query(`
+		SELECT * FROM patients 
+		WHERE LOWER(location) LIKE LOWER(?) 
+		AND budget >= ?
+		ORDER BY 
+			budget DESC
+	`, "%"+caregiver.Location+"%", caregiver.RateExpectations)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query matching patients: %v", err)
+	}
+	defer result.Close()
+
+	var patients []Patient
+	err = result.Iterate(func(r *chai.Row) error {
+		var p Patient
+		if err := r.Scan(&p.Email, &p.CareNeeds, &p.Location, &p.ScheduleRequirements,
+			&p.Budget, &p.SpecialRequirements, &p.CreatedAt); err != nil {
+			return fmt.Errorf("failed to scan patient: %v", err)
+		}
+		patients = append(patients, p)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to iterate matching patients: %v", err)
+	}
+
+	return patients, nil
 }
 
 // Add new method to load chat history
@@ -1261,9 +1262,14 @@ func (app *App) DebugPrintAllMessages() {
 	}
 }
 
-// Add these functions to help with testing
+// Add this type to represent a chat message
+type ChatMessage struct {
+	Email   string
+	Message string
+}
 
-func processTestData(app *App, filename string) error {
+// Simplified processTestData that processes messages sequentially
+func processTestData(filename string) error {
 	file, err := os.Open(filename)
 	if err != nil {
 		return fmt.Errorf("failed to open test data file: %v", err)
@@ -1272,14 +1278,12 @@ func processTestData(app *App, filename string) error {
 
 	scanner := bufio.NewScanner(file)
 
-	// Process each line as if it were a chat message
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
 			continue
 		}
 
-		// Split line into email and message
 		parts := strings.SplitN(line, ": ", 2)
 		if len(parts) != 2 {
 			log.Printf("Skipping invalid line format: %s", line)
@@ -1287,87 +1291,39 @@ func processTestData(app *App, filename string) error {
 		}
 
 		email, message := parts[0], parts[1]
+		log.Printf("Processing message from %s: %s", email, message)
 
-		// Add the message to the chat history
-		if err := app.AddMessageWithRecipient(email, "user", message, "admin"); err != nil {
-			log.Printf("Error adding test message for %s: %v", email, err)
+		// Add user message
+		if err := chatRoom.AddMessageWithRecipient(email, "user", message, "admin"); err != nil {
+			log.Printf("Error adding message for %s: %v", email, err)
 			continue
 		}
 
-		// Get chat history for OpenAI
+		// Get chat history and process with OpenAI
 		messages := []Message{
 			{Role: "system", Content: systemPrompt},
 		}
-		messages = append(messages, app.GetUserMessages(email)...)
+		messages = append(messages, chatRoom.GetUserMessages(email)...)
 
-		// Call OpenAI
+		// Process with OpenAI
 		chatReq := ChatRequest{
 			Model:    "gpt-3.5-turbo",
 			Messages: messages,
 		}
 
-		log.Printf("Sending request to OpenAI for %s: %s", email, message)
-		chatResp, err := callOpenAI(chatReq)
+		resp, err := callOpenAI(chatReq)
 		if err != nil {
 			log.Printf("Error calling OpenAI for %s: %v", email, err)
 			continue
 		}
 
-		// Process OpenAI response
-		if len(chatResp.Choices) > 0 {
-			choice := chatResp.Choices[0].Message
-			log.Printf("Response from OpenAI for %s: %+v", email, choice)
-
-			if choice.FunctionCall != nil {
-				// Handle function calls
-				args, err := choice.FunctionCall.GetArguments()
-				if err != nil {
-					log.Printf("Error parsing function arguments: %v", err)
-					continue
-				}
-
-				switch choice.FunctionCall.Name {
-				case "store_caregiver":
-					caregiver := &Caregiver{
-						Email:            getStringArg(args, "email", ""),
-						Experience:       getStringArg(args, "experience", ""),
-						Location:         getStringArg(args, "location", ""),
-						Availability:     getStringArg(args, "availability", ""),
-						Specializations:  getStringArg(args, "specializations", ""),
-						RateExpectations: getFloatArg(args, "rate_expectations", 0),
-						Certifications:   getStringArg(args, "certifications", ""),
-					}
-					if err := app.StoreCaregiver(caregiver); err != nil {
-						log.Printf("Error storing caregiver %s: %v", caregiver.Email, err)
-					} else {
-						log.Printf("Successfully stored caregiver: %s", caregiver.Email)
-					}
-
-				case "store_patient":
-					patient := &Patient{
-						Email:                getStringArg(args, "email", ""),
-						CareNeeds:            getStringArg(args, "care_needs", ""),
-						Location:             getStringArg(args, "location", ""),
-						ScheduleRequirements: getStringArg(args, "schedule_requirements", ""),
-						Budget:               getFloatArg(args, "budget", 0),
-						SpecialRequirements:  getStringArg(args, "special_requirements", ""),
-					}
-					if err := app.StorePatient(patient); err != nil {
-						log.Printf("Error storing patient %s: %v", patient.Email, err)
-					} else {
-						log.Printf("Successfully stored patient: %s", patient.Email)
-					}
-				}
-			}
-
-			// Store the assistant's response
-			if choice.Content != "" {
-				log.Printf("Assistant response to %s: %s", email, choice.Content)
-				if err := app.AddMessageWithRecipient(email, "assistant", choice.Content, "admin"); err != nil {
-					log.Printf("Error adding assistant response for %s: %v", email, err)
-				}
-			}
+		// Handle OpenAI response
+		if err := handleOpenAIResponse(resp, email, chatRoom); err != nil {
+			log.Printf("Error handling OpenAI response for %s: %v", email, err)
+			continue
 		}
+
+		log.Printf("Completed processing message for %s", email)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -1377,19 +1333,22 @@ func processTestData(app *App, filename string) error {
 	return nil
 }
 
-// Add these formatting functions
+// Update the formatting functions to be consistent
 func formatPatientList(patients []Patient) string {
 	var sb strings.Builder
-	sb.WriteString("List of Patients:\n\n")
+
+	if len(patients) == 0 {
+		return "No matching patients found."
+	}
+
+	sb.WriteString("Matching patients:\n\n")
 
 	for _, p := range patients {
-		sb.WriteString(fmt.Sprintf("Email: %s\n", p.Email))
-		sb.WriteString(fmt.Sprintf("Location: %s\n", p.Location))
-		sb.WriteString(fmt.Sprintf("Care Needs: %s\n", p.CareNeeds))
-		sb.WriteString(fmt.Sprintf("Schedule Requirements: %s\n", p.ScheduleRequirements))
-		sb.WriteString(fmt.Sprintf("Budget: $%.2f/hour\n", p.Budget))
-		sb.WriteString(fmt.Sprintf("Special Requirements: %s\n", p.SpecialRequirements))
-		sb.WriteString("-------------------\n")
+		sb.WriteString(fmt.Sprintf("• %s\n", p.Email))
+		sb.WriteString(fmt.Sprintf("  Location: %s\n", p.Location))
+		sb.WriteString(fmt.Sprintf("  Budget: $%.2f/hour\n", p.Budget))
+		sb.WriteString(fmt.Sprintf("  Schedule: %s\n", p.ScheduleRequirements))
+		sb.WriteString(fmt.Sprintf("  Care Needs: %s\n\n", p.CareNeeds))
 	}
 
 	return sb.String()
@@ -1397,18 +1356,291 @@ func formatPatientList(patients []Patient) string {
 
 func formatCaregiverList(caregivers []Caregiver) string {
 	var sb strings.Builder
-	sb.WriteString("Here are the matching caregivers:\n\n")
+
+	if len(caregivers) == 0 {
+		return "No matching caregivers found."
+	}
+
+	sb.WriteString("Matching caregivers:\n\n")
 
 	for _, c := range caregivers {
-		// Create a link for each caregiver
-		sb.WriteString(fmt.Sprintf("• <a href='/profile?email=%s'>%s</a>\n",
-			url.QueryEscape(c.Email), c.Email))
+		sb.WriteString(fmt.Sprintf("• %s\n", c.Email))
 		sb.WriteString(fmt.Sprintf("  Location: %s\n", c.Location))
 		sb.WriteString(fmt.Sprintf("  Rate: $%.2f/hour\n", c.RateExpectations))
-		sb.WriteString(fmt.Sprintf("  Availability: %s\n\n", c.Availability))
+		sb.WriteString(fmt.Sprintf("  Availability: %s\n", c.Availability))
+		sb.WriteString(fmt.Sprintf("  Specializations: %s\n\n", c.Specializations))
 	}
 
 	return sb.String()
+}
+
+func formatPatientMatches(patients []Patient) string {
+	var sb strings.Builder
+	sb.WriteString("Here are the matching patients:\n\n")
+
+	for _, p := range patients {
+		sb.WriteString(fmt.Sprintf("• <a href='/profile?email=%s'>%s</a>\n",
+			url.QueryEscape(p.Email), p.Email))
+		sb.WriteString(fmt.Sprintf("  Location: %s\n", p.Location))
+		sb.WriteString(fmt.Sprintf("  Budget: $%.2f/hour\n", p.Budget))
+		sb.WriteString(fmt.Sprintf("  Care Needs: %s\n", p.CareNeeds))
+		sb.WriteString(fmt.Sprintf("  Schedule Requirements: %s\n\n", p.ScheduleRequirements))
+	}
+
+	return sb.String()
+}
+
+func handleOpenAIResponse(resp *ChatResponse, email string, app *App) error {
+	if len(resp.Choices) == 0 {
+		return nil
+	}
+
+	choice := resp.Choices[0].Message
+	if choice.FunctionCall != nil {
+		args, err := choice.FunctionCall.GetArguments()
+		if err != nil {
+			return fmt.Errorf("error parsing function arguments: %v", err)
+		}
+
+		var response string
+		switch choice.FunctionCall.Name {
+		case "list_patients":
+			patients, err := app.ListPatients()
+			if err != nil {
+				response = fmt.Sprintf("Error listing patients: %v", err)
+			} else {
+				response = formatPatientList(patients)
+			}
+
+		case "list_caregivers":
+			caregivers, err := app.ListCaregivers()
+			if err != nil {
+				response = fmt.Sprintf("Error listing caregivers: %v", err)
+			} else {
+				response = formatCaregiverList(caregivers)
+			}
+
+		case "find_matching_caregivers":
+			caregivers, err := app.FindMatchingCaregivers(email)
+			if err != nil {
+				response = fmt.Sprintf("Error finding matches: %v", err)
+			} else {
+				response = formatCaregiverList(caregivers)
+			}
+
+		case "find_matching_patients":
+			patients, err := app.FindMatchingPatients(email)
+			if err != nil {
+				response = fmt.Sprintf("Error finding matches: %v", err)
+			} else {
+				response = formatPatientList(patients)
+			}
+
+		case "store_caregiver":
+			caregiver := &Caregiver{
+				Email:            email, // Use current user's email
+				Experience:       getStringArg(args, "experience", ""),
+				Location:         getStringArg(args, "location", ""),
+				Availability:     getStringArg(args, "availability", ""),
+				Specializations:  getStringArg(args, "specializations", ""),
+				RateExpectations: getFloatArg(args, "rate_expectations", 0),
+				Certifications:   getStringArg(args, "certifications", ""),
+			}
+			if err := app.StoreCaregiver(caregiver); err != nil {
+				response = fmt.Sprintf("Error storing caregiver: %v", err)
+			} else {
+				response = "Successfully registered as a caregiver."
+			}
+
+		case "store_patient":
+			patient := &Patient{
+				Email:                email, // Use current user's email
+				CareNeeds:            getStringArg(args, "care_needs", ""),
+				Location:             getStringArg(args, "location", ""),
+				ScheduleRequirements: getStringArg(args, "schedule_requirements", ""),
+				Budget:               getFloatArg(args, "budget", 0),
+				SpecialRequirements:  getStringArg(args, "special_requirements", ""),
+			}
+			if err := app.StorePatient(patient); err != nil {
+				response = fmt.Sprintf("Error storing patient: %v", err)
+			} else {
+				response = "Successfully registered as a patient."
+			}
+		}
+
+		if response != "" {
+			if err := app.AddMessageWithRecipient(email, "assistant", response, "admin"); err != nil {
+				return fmt.Errorf("error adding function response: %v", err)
+			}
+		}
+	}
+
+	if choice.Content != "" {
+		if err := app.AddMessageWithRecipient(email, "assistant", choice.Content, "admin"); err != nil {
+			return fmt.Errorf("error adding assistant response: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// Add this function to test all matches
+func testAllMatches(app *App) {
+	log.Println("\n=== Testing All Matches ===")
+
+	// Get all caregivers and patients
+	caregivers, err := app.ListCaregivers()
+	if err != nil {
+		log.Printf("Error listing caregivers: %v", err)
+		return
+	}
+
+	patients, err := app.ListPatients()
+	if err != nil {
+		log.Printf("Error listing patients: %v", err)
+		return
+	}
+
+	// Show all patient -> caregiver matches
+	log.Println("\nPatient -> Caregiver Matches:")
+	for _, p := range patients {
+		log.Printf("\nPatient: %s", p.Email)
+		log.Printf("Matches with all caregivers:")
+		for _, c := range caregivers {
+			log.Printf("  • %s", c.Email)
+		}
+	}
+
+	// Show all caregiver -> patient matches
+	log.Println("\nCaregiver -> Patient Matches:")
+	for _, c := range caregivers {
+		log.Printf("\nCaregiver: %s", c.Email)
+		log.Printf("Matches with all patients:")
+		for _, p := range patients {
+			log.Printf("  • %s", p.Email)
+		}
+	}
+}
+
+func (app *App) handlePatientRegistration(email string, messages []Message) error {
+	// Extract patient information from messages
+	patient := &Patient{
+		Email:                email,
+		CareNeeds:            extractCareNeeds(messages),
+		Location:             extractLocation(messages),
+		ScheduleRequirements: extractSchedule(messages),
+		Budget:               extractBudget(messages),
+		SpecialRequirements:  extractSpecialRequirements(messages),
+		CreatedAt:            time.Now(),
+	}
+
+	// Store the patient
+	return app.StorePatient(patient)
+}
+
+// Helper functions to extract information from messages
+func extractCareNeeds(messages []Message) string {
+	for _, msg := range messages {
+		if strings.Contains(strings.ToLower(msg.Content), "elderly care") ||
+			strings.Contains(strings.ToLower(msg.Content), "care needs") {
+			return msg.Content
+		}
+	}
+	return ""
+}
+
+func extractLocation(messages []Message) string {
+	for _, msg := range messages {
+		if strings.Contains(strings.ToLower(msg.Content), "located in") {
+			parts := strings.Split(msg.Content, "located in ")
+			if len(parts) > 1 {
+				return strings.TrimSpace(parts[1])
+			}
+		}
+	}
+	return ""
+}
+
+func extractSchedule(messages []Message) string {
+	for _, msg := range messages {
+		if strings.Contains(strings.ToLower(msg.Content), "full-time") ||
+			strings.Contains(strings.ToLower(msg.Content), "part-time") ||
+			strings.Contains(strings.ToLower(msg.Content), "schedule") {
+			return msg.Content
+		}
+	}
+	return ""
+}
+
+func extractBudget(messages []Message) float64 {
+	for _, msg := range messages {
+		if strings.Contains(strings.ToLower(msg.Content), "budget") ||
+			strings.Contains(strings.ToLower(msg.Content), "$") {
+			// Extract number after $ sign
+			parts := strings.Split(msg.Content, "$")
+			if len(parts) > 1 {
+				numStr := strings.Split(parts[1], "/")[0]
+				if budget, err := strconv.ParseFloat(numStr, 64); err == nil {
+					return budget
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func extractSpecialRequirements(messages []Message) string {
+	for _, msg := range messages {
+		if strings.Contains(strings.ToLower(msg.Content), "must have") ||
+			strings.Contains(strings.ToLower(msg.Content), "require") {
+			return msg.Content
+		}
+	}
+	return ""
+}
+
+// Add this function to check if messages indicate patient registration
+func isPatientRegistration(messages []Message) bool {
+	for _, msg := range messages {
+		content := strings.ToLower(msg.Content)
+		if strings.Contains(content, "register") && strings.Contains(content, "patient") {
+			return true
+		}
+	}
+	return false
+}
+
+// Modify the hasAllRequiredInfo function to remove unused variable
+func hasAllRequiredInfo(messages []Message) bool {
+	var (
+		hasCareNeeds bool
+		hasLocation  bool
+		hasSchedule  bool
+		hasBudget    bool
+	)
+
+	for _, msg := range messages {
+		content := strings.ToLower(msg.Content)
+
+		if strings.Contains(content, "elderly care") ||
+			strings.Contains(content, "care needs") {
+			hasCareNeeds = true
+		}
+		if strings.Contains(content, "located in") {
+			hasLocation = true
+		}
+		if strings.Contains(content, "full-time") ||
+			strings.Contains(content, "part-time") ||
+			strings.Contains(content, "schedule") {
+			hasSchedule = true
+		}
+		if strings.Contains(content, "$") ||
+			strings.Contains(content, "budget") {
+			hasBudget = true
+		}
+	}
+
+	return hasCareNeeds && hasLocation && hasSchedule && hasBudget
 }
 
 func main() {
@@ -1430,14 +1662,62 @@ func main() {
 	// Process test data if the file exists
 	if _, err := os.Stat("testdata.txt"); err == nil {
 		log.Println("Processing test data...")
-		if err := processTestData(chatRoom, "testdata.txt"); err != nil {
+		if err := processTestData("testdata.txt"); err != nil {
 			log.Printf("Error processing test data: %v", err)
 		}
-		// Print debug information after processing
-		chatRoom.DebugPrintAllMessages()
+		log.Println("Completed processing test data")
+
+		// Run matching tests after processing test data
+		testAllMatches(chatRoom)
 	}
 
 	port := ":8080"
 	fmt.Printf("Server starting on http://localhost%s\n", port)
 	log.Fatal(http.ListenAndServe(port, nil))
+}
+
+func (app *App) handleChat(email string, message string) (string, error) {
+	// Add message to history
+	if err := app.AddMessageWithRecipient(email, "user", message, "system"); err != nil {
+		return "", err
+	}
+
+	messages := app.GetUserMessages(email)
+
+	// Check if this is a patient registration flow and all info is provided
+	if isPatientRegistration(messages) && hasAllRequiredInfo(messages) {
+		// Register the patient
+		patient := &Patient{
+			Email:                email,
+			CareNeeds:            extractCareNeeds(messages),
+			Location:             extractLocation(messages),
+			ScheduleRequirements: extractSchedule(messages),
+			Budget:               extractBudget(messages),
+			SpecialRequirements:  extractSpecialRequirements(messages),
+			CreatedAt:            time.Now(),
+		}
+
+		if err := app.StorePatient(patient); err != nil {
+			return "", fmt.Errorf("failed to store patient: %v", err)
+		}
+
+		// After registration, show matching caregivers
+		caregivers, err := app.FindMatchingCaregivers(email)
+		if err != nil {
+			return "", fmt.Errorf("failed to find matches: %v", err)
+		}
+		return formatCaregiverList(caregivers), nil
+	}
+
+	// Handle match command
+	if strings.ToLower(message) == "match" || strings.ToLower(message) == "list matches" {
+		caregivers, err := app.FindMatchingCaregivers(email)
+		if err != nil {
+			return "", fmt.Errorf("failed to find matches: %v", err)
+		}
+		return formatCaregiverList(caregivers), nil
+	}
+
+	// Rest of chat handling...
+	return "", nil
 }
