@@ -157,10 +157,56 @@ const (
         .send-button:hover {
             background-color: #45a049;
         }
+        .avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            object-fit: cover;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
         .user-email {
             text-align: right;
             color: #666;
             margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+        .matches-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .match-item {
+            background: #ffffff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 10px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .match-avatar {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            object-fit: cover;
+        }
+        .match-details {
+            flex-grow: 1;
+        }
+        .match-details span {
+            display: block;
+            margin: 5px 0;
+            color: #666;
+        }
+        .match-details strong {
+            color: #333;
+            font-size: 1.1em;
         }
     </style>
 </head>
@@ -171,7 +217,10 @@ const (
             <h1>Helper</h1>
             <div class="app-description">Connecting Caregivers to Patients</div>
         </div>
-        <div class="user-email">Logged in as: {{.UserEmail}}</div>
+        <div class="user-email">
+            <img src="/static/images/default-avatar.png" alt="User Avatar" class="avatar">
+            Logged in as: {{.UserEmail}}
+        </div>
         <div id="messages">
             {{range .Messages}}
             <div class="message {{.Role}}">
@@ -1256,7 +1305,7 @@ func processTestData(filename string) error {
 	return nil
 }
 
-// Update the formatting functions to be consistent
+// Update the formatting functions to include avatars
 func formatPatientList(patients []Patient) string {
 	var sb strings.Builder
 
@@ -1268,13 +1317,32 @@ func formatPatientList(patients []Patient) string {
 	sb.WriteString("<ul class='matches-list'>")
 
 	for _, p := range patients {
+		// Get skills for this patient
+		skills, err := chatRoom.GetSkills(p.Email)
+		if err != nil {
+			log.Printf("Error getting skills for patient %s: %v", p.Email, err)
+			skills = []string{} // Use empty list if error
+		}
+
 		sb.WriteString("<li class='match-item'>")
+		sb.WriteString("<img src='/static/images/patient-avatar.png' alt='Patient Avatar' class='match-avatar'>")
+		sb.WriteString("<div class='match-details'>")
 		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", p.Email))
 		sb.WriteString(fmt.Sprintf("<span>📍 Location: %s</span><br>", p.Location))
 		sb.WriteString(fmt.Sprintf("<span>💰 Budget: $%.2f/hour</span><br>", p.Budget))
 		sb.WriteString(fmt.Sprintf("<span>🕒 Schedule: %s</span><br>", p.ScheduleRequirements))
-		sb.WriteString(fmt.Sprintf("<span>ℹ️ Care Needs: %s</span>", p.CareNeeds))
-		sb.WriteString("</li>")
+		sb.WriteString(fmt.Sprintf("<span>ℹ️ Care Needs: %s</span><br>", p.CareNeeds))
+		if len(skills) > 0 {
+			sb.WriteString("<span>🎯 Skills: ")
+			for i, skill := range skills {
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(skill)
+			}
+			sb.WriteString("</span>")
+		}
+		sb.WriteString("</div></li>")
 	}
 
 	sb.WriteString("</ul>")
@@ -1292,13 +1360,32 @@ func formatCaregiverList(caregivers []Caregiver) string {
 	sb.WriteString("<ul class='matches-list'>")
 
 	for _, c := range caregivers {
+		// Get skills for this caregiver
+		skills, err := chatRoom.GetSkills(c.Email)
+		if err != nil {
+			log.Printf("Error getting skills for caregiver %s: %v", c.Email, err)
+			skills = []string{} // Use empty list if error
+		}
+
 		sb.WriteString("<li class='match-item'>")
+		sb.WriteString("<img src='/static/images/caregiver-avatar.png' alt='Caregiver Avatar' class='match-avatar'>")
+		sb.WriteString("<div class='match-details'>")
 		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", c.Email))
 		sb.WriteString(fmt.Sprintf("<span>📍 Location: %s</span><br>", c.Location))
 		sb.WriteString(fmt.Sprintf("<span>💰 Rate: $%.2f/hour</span><br>", c.RateExpectations))
 		sb.WriteString(fmt.Sprintf("<span>🕒 Availability: %s</span><br>", c.Availability))
-		sb.WriteString(fmt.Sprintf("<span>👩 Specializations: %s</span><br>", c.Specializations))
-		sb.WriteString("</li>")
+		sb.WriteString(fmt.Sprintf("<span>🎯 Specializations: %s</span><br>", c.Specializations))
+		if len(skills) > 0 {
+			sb.WriteString("<span>🎯 Skills: ")
+			for i, skill := range skills {
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(skill)
+			}
+			sb.WriteString("</span>")
+		}
+		sb.WriteString("</div></li>")
 	}
 
 	sb.WriteString("</ul>")
@@ -1568,11 +1655,16 @@ func main() {
 	}
 
 	var err error
+	// Fix: Assign to global chatRoom variable
 	chatRoom, err = NewApp(apiKey)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer chatRoom.Close()
+
+	// Serve static files before other routes
+	fs := http.FileServer(http.Dir("static"))
+	http.Handle("/static/", http.StripPrefix("/static/", fs))
 
 	http.HandleFunc("/", handleChat)
 	http.HandleFunc("/chat", handleChat)
