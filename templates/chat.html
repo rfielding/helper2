@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Helper - Connecting Caregivers to Patients</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="chat-container">
+        <div class="header">
+            <div class="red-cross">✚</div>
+            <h1>Helper</h1>
+            <div class="app-description">Connecting Caregivers to Patients</div>
+        </div>
+
+        <div class="user-profile">
+            <img src="{{.ImagePath}}" alt="Profile" class="user-profile-image" id="profile-image">
+            <div class="user-info">
+                <div class="user-email">{{.UserEmail}}</div>
+                <div class="user-role">{{.UserRole}}</div>
+                <div class="image-upload">
+                    <label for="file-input">Update Profile Picture</label>
+                    <input id="file-input" type="file" name="image" accept="image/jpeg,image/png" onchange="uploadImage(this)">
+                </div>
+            </div>
+        </div>
+
+        <div id="messages">
+            {{range .Messages}}
+            <div class="message {{.Role}}">
+                <strong>{{.Role}}:</strong> {{.Content | html}}
+            </div>
+            {{end}}
+        </div>
+
+        <form method="POST" action="/chat" class="message-form">
+            <input type="hidden" name="email" value="{{.UserEmail}}">
+            <input type="text" name="message" placeholder="Type your message..." class="message-input" required>
+            <button type="submit" class="send-button">Send</button>
+        </form>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html> 
