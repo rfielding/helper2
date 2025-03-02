@@ -1,109 +1,190 @@
-caregiver1@example.com: Looking to provide care services
-caregiver1@example.com: 5 years experience in elderly care
-caregiver1@example.com: Located in Alexandria, available Monday-Friday
-caregiver1@example.com: CNA certified, specializing in elderly care
-caregiver1@example.com: Rate $25/hour
-
-caregiver2@example.com: I'd like to offer care services
-caregiver2@example.com: 3 years experience in rehabilitation
-caregiver2@example.com: Based in Arlington, available weekends
-caregiver2@example.com: Physical Therapy Assistant certification
-caregiver2@example.com: Specialize in physical therapy and post-surgery care
-caregiver2@example.com: Rate $30/hour
-
-caregiver3@example.com: Interested in providing care
-caregiver3@example.com: 8 years nursing experience
-caregiver3@example.com: Located in Fairfax, available evenings and nights
-caregiver3@example.com: RN certified, medical care specialist
-caregiver3@example.com: Rate $35/hour
-
-caregiver4@example.com: Want to provide care services
-caregiver4@example.com: 6 years in memory care
-caregiver4@example.com: Alexandria based, available full-time
-caregiver4@example.com: Dementia Care Specialist certification
-caregiver4@example.com: Specializing in dementia care
-caregiver4@example.com: Rate $28/hour
-
-caregiver6@example.com: Looking to provide care
-caregiver6@example.com: 4 years pediatric care experience
-caregiver6@example.com: Springfield area, part-time availability
-caregiver6@example.com: LPN certified, pediatric specialist
-caregiver6@example.com: Rate $27/hour
-
-caregiver7@example.com: Offering care services
-caregiver7@example.com: 7 years hospice care experience
-caregiver7@example.com: McLean location, 24/7 live-in available
-caregiver7@example.com: Hospice Care certified
-caregiver7@example.com: Specializing in end-of-life care
-caregiver7@example.com: Rate $32/hour
-
-caregiver8@example.com: Want to provide care
-caregiver8@example.com: 3 years disability care experience
-caregiver8@example.com: Located in Reston, weekday mornings
-caregiver8@example.com: Special Needs Care certified
-caregiver8@example.com: Rate $26/hour
-
-patient1@example.com: Need care services
-patient1@example.com: Looking for elderly care and medication management
-patient1@example.com: Located in Alexandria
-patient1@example.com: Need full-time weekdays
-patient1@example.com: Budget $30/hour
-patient1@example.com: Must have experience with diabetes care
-
-patient2@example.com: Seeking care assistance
-patient2@example.com: Need post-surgery recovery help
-patient2@example.com: Arlington area
-patient2@example.com: Temporary - 3 months
-patient2@example.com: Can pay $35/hour
-patient2@example.com: Physical therapy experience required
-
-patient3@example.com: Need medical care
-patient3@example.com: Require 24/7 medical supervision
-patient3@example.com: Located in Fairfax
-patient3@example.com: Need live-in care
-patient3@example.com: Budget $40/hour
-patient3@example.com: Must be RN
-
-patient4@example.com: Looking for caregiver
-patient4@example.com: Need memory care and daily activities assistance
-patient4@example.com: McLean location
-patient4@example.com: Evenings and weekends needed
-patient4@example.com: Budget $32/hour
-patient4@example.com: Must have dementia care experience
-
-patient6@example.com: Need special needs care
-patient6@example.com: Pediatric special needs care required
-patient6@example.com: Springfield area
-patient6@example.com: After school hours
-patient6@example.com: Budget $28/hour
-patient6@example.com: Experience with autism needed
-
-patient7@example.com: Seeking companion care
-patient7@example.com: Need senior companionship
-patient7@example.com: Reston location
-patient7@example.com: Morning visits needed
-patient7@example.com: Budget $26/hour
-patient7@example.com: Must provide transportation
-
-patient8@example.com: Need recovery assistance
-patient8@example.com: Looking for recovery help
-patient8@example.com: Alexandria area
-patient8@example.com: Flexible hours needed
-patient8@example.com: Budget $29/hour
-patient8@example.com: Physical therapy background preferred
-
+caregiver1@example.com: Hi, I'm Sarah Johnson, registering as a caregiver
+caregiver1@example.com: I have 10 years experience in elderly care
+caregiver1@example.com: Located in New York, NY
+caregiver1@example.com: I'm available weekdays 9am-5pm
+caregiver1@example.com: I'm CNA certified, specializing in elderly and dementia care
+caregiver1@example.com: My rate is $35/hour
+caregiver1@example.com: Can you help me find patients?
 caregiver1@example.com: match
+
+patient1@example.com: Hello, I'm Robert Wilson, need to find a caregiver
+patient1@example.com: Looking for help with my elderly mother, Martha Wilson
+patient1@example.com: We're located in New York, NY
+patient1@example.com: Need someone weekdays 9am-5pm
+patient1@example.com: Our budget is $40/hour
+patient1@example.com: Must have experience with medication management
+patient1@example.com: My phone number is (212) 555-0101
+patient1@example.com: Can you show me available caregivers?
+patient1@example.com: match
+
+caregiver2@example.com: Hi there, I'm Maria Rodriguez, want to register as a caregiver
+caregiver2@example.com: I specialize in pediatric care with 5 years experience
+caregiver2@example.com: I'm in Los Angeles, CA
+caregiver2@example.com: Available evenings and weekends
+caregiver2@example.com: LPN certified, with special needs experience
+caregiver2@example.com: Looking for $40/hour
+caregiver2@example.com: Are there any matches for me?
 caregiver2@example.com: match
+
+patient2@example.com: Hi, I'm David Chen looking for a caregiver for my child
+patient2@example.com: My son Tommy has autism and needs special care
+patient2@example.com: We're in Los Angeles area
+patient2@example.com: Need after-school care 3pm-8pm
+patient2@example.com: Can pay up to $45/hour
+patient2@example.com: Must have experience with autism
+patient2@example.com: My phone number is (310) 555-0102
+patient2@example.com: Please show me available caregivers
+patient2@example.com: match
+
+caregiver3@example.com: Hello! I'm Michael Brown, registering as a rehabilitation specialist
+caregiver3@example.com: I have 8 years experience in rehabilitation care
+caregiver3@example.com: Based in Chicago, IL
+caregiver3@example.com: I offer flexible hours, full-time available
+caregiver3@example.com: Physical Therapy Assistant certified
+caregiver3@example.com: Specializing in post-surgery recovery
+caregiver3@example.com: Rate is $45/hour
+caregiver3@example.com: Any patients needing rehab care?
 caregiver3@example.com: match
+
+patient3@example.com: Hello, I'm Jennifer Lee looking for post-surgery care
+patient3@example.com: Need help with recovery and physical therapy
+patient3@example.com: Located in Chicago
+patient3@example.com: Need full-time care temporarily
+patient3@example.com: Budget is $50/hour
+patient3@example.com: Must have physical therapy experience
+patient3@example.com: You can reach me at (312) 555-0103
+patient3@example.com: Can you find someone?
+patient3@example.com: match
+
+caregiver4@example.com: Hi, I'm Emily Davis, an experienced home healthcare provider
+caregiver4@example.com: 15 years in home healthcare
+caregiver4@example.com: Located in Houston, TX
+caregiver4@example.com: Available for 24/7 live-in care
+caregiver4@example.com: RN certified, specializing in chronic illness
+caregiver4@example.com: Rate is $38/hour
+caregiver4@example.com: Looking for patients needing care
 caregiver4@example.com: match
+
+patient4@example.com: Hi, I'm James Martinez needing 24/7 care for my father
+patient4@example.com: Looking for live-in caregiver for Richard Martinez
+patient4@example.com: We're in Houston, TX
+patient4@example.com: Need full-time live-in care
+patient4@example.com: Budget is $42/hour
+patient4@example.com: Must have dementia care experience
+patient4@example.com: Contact number is (713) 555-0104
+patient4@example.com: Please help find a match
+patient4@example.com: match
+
+caregiver5@example.com: Hello, I'm Rachel Kim, registering as mental health support caregiver
+caregiver5@example.com: 3 years experience in mental health care
+caregiver5@example.com: Based in Miami, FL
+caregiver5@example.com: Available part-time, weekends
+caregiver5@example.com: Mental Health First Aid certified
+caregiver5@example.com: Rate is $32/hour
+caregiver5@example.com: Looking for clients
+caregiver5@example.com: match
+
+patient5@example.com: Hi, I'm Thomas Anderson seeking mental health support care
+patient5@example.com: Need companionship and support
+patient5@example.com: Located in Miami, FL
+patient5@example.com: Weekend care needed
+patient5@example.com: Budget is $35/hour
+patient5@example.com: Need mental health experience
+patient5@example.com: Phone number is (305) 555-0105
+patient5@example.com: Show me available caregivers
+patient5@example.com: match
+
+caregiver6@example.com: Hi, I'm Lisa Thompson, a hospice care specialist
+caregiver6@example.com: 12 years in hospice care
+caregiver6@example.com: Located in Boston, MA
+caregiver6@example.com: Available for overnight shifts
+caregiver6@example.com: Hospice Care certified
+caregiver6@example.com: Rate is $42/hour
+caregiver6@example.com: Looking for patients
 caregiver6@example.com: match
+
+patient6@example.com: Hello, I'm William Scott needing hospice care support
+patient6@example.com: Looking for overnight care for my mother Susan Scott
+patient6@example.com: Located in Boston area
+patient6@example.com: Need overnight coverage
+patient6@example.com: Budget is $45/hour
+patient6@example.com: Must have hospice experience
+patient6@example.com: Call us at (617) 555-0106
+patient6@example.com: Please find available caregivers
+patient6@example.com: match
+
+caregiver7@example.com: Hi, I'm Daniel Park, registering as disability support provider
+caregiver7@example.com: 7 years in disability care
+caregiver7@example.com: Seattle, WA based
+caregiver7@example.com: Flexible schedule available
+caregiver7@example.com: DSP certified
+caregiver7@example.com: Rate is $37/hour
+caregiver7@example.com: Any matches available?
 caregiver7@example.com: match
+
+patient7@example.com: Hello, I'm Elizabeth Green needing disability support care
+patient7@example.com: Require wheelchair transfer assistance
+patient7@example.com: Located in Seattle
+patient7@example.com: Flexible part-time hours needed
+patient7@example.com: Budget is $40/hour
+patient7@example.com: Need mobility assistance experience
+patient7@example.com: Contact number (206) 555-0107
+patient7@example.com: Show me caregivers
+patient7@example.com: match
+
+caregiver8@example.com: Hello, I'm Amanda White, registering as autism care specialist
+caregiver8@example.com: 4 years experience with autism care
+caregiver8@example.com: Based in Portland, OR
+caregiver8@example.com: Available after-school hours
+caregiver8@example.com: ABA Therapy certified
+caregiver8@example.com: Rate is $39/hour
+caregiver8@example.com: Looking for clients
 caregiver8@example.com: match
 
-patient1@example.com: match
-patient2@example.com: match
-patient3@example.com: match
-patient4@example.com: match
-patient6@example.com: match
-patient7@example.com: match
+patient8@example.com: Hi, I'm Kevin Taylor seeking autism care specialist
+patient8@example.com: Looking for after-school support for my son Alex
+patient8@example.com: We're in Portland
+patient8@example.com: Need weekday afternoon care
+patient8@example.com: Budget is $42/hour
+patient8@example.com: Must have ABA experience
+patient8@example.com: Phone is (503) 555-0108
+patient8@example.com: Find me a caregiver
 patient8@example.com: match
+
+caregiver9@example.com: Hi, I'm Steven Foster, registering as stroke recovery specialist
+caregiver9@example.com: 9 years in stroke recovery
+caregiver9@example.com: Denver area based
+caregiver9@example.com: Morning shifts available
+caregiver9@example.com: Rehabilitation Aide certified
+caregiver9@example.com: Rate is $41/hour
+caregiver9@example.com: Any patients available?
+caregiver9@example.com: match
+
+patient9@example.com: Hello, I'm Patricia Hughes needing stroke recovery support
+patient9@example.com: Looking for rehabilitation help
+patient9@example.com: Located in Denver
+patient9@example.com: Need morning sessions
+patient9@example.com: Budget is $44/hour
+patient9@example.com: Need stroke recovery experience
+patient9@example.com: Call (303) 555-0109
+patient9@example.com: Show available caregivers
+patient9@example.com: match
+
+caregiver10@example.com: Hi, I'm Michelle Patel, registering as diabetes care specialist
+caregiver10@example.com: 6 years with diabetes patients
+caregiver10@example.com: Phoenix, AZ location
+caregiver10@example.com: Available for rotating shifts
+caregiver10@example.com: Diabetes Care certified
+caregiver10@example.com: Rate is $36/hour
+caregiver10@example.com: Looking for patients
+caregiver10@example.com: match
+
+patient10@example.com: Hello, I'm Christopher Nelson needing diabetes care specialist
+patient10@example.com: Looking for blood sugar monitoring
+patient10@example.com: Located in Phoenix
+patient10@example.com: Need flexible schedule
+patient10@example.com: Budget is $38/hour
+patient10@example.com: Must have diabetes experience
+patient10@example.com: Contact at (602) 555-0110
+patient10@example.com: Find available caregivers
+patient10@example.com: match

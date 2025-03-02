@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 // Database models
 type Caregiver struct {
 	Email            string    `json:"email"`
+	Name             string    `json:"name"`
 	Experience       string    `json:"experience"`
 	Location         string    `json:"location"`
 	Availability     string    `json:"availability"`
@@ -34,11 +36,13 @@ type Caregiver struct {
 
 type Patient struct {
 	Email                string    `json:"email"`
+	Name                 string    `json:"name"`
 	CareNeeds            string    `json:"care_needs"`
 	Location             string    `json:"location"`
 	ScheduleRequirements string    `json:"schedule_requirements"`
 	Budget               float64   `json:"budget"`
 	SpecialRequirements  string    `json:"special_requirements"`
+	PhoneNumber          string    `json:"phone_number"`
 	CreatedAt            time.Time `json:"created_at"`
 }
 
@@ -492,6 +496,7 @@ func NewApp(apiKey string) (*App, error) {
 			schedule_requirements TEXT,
 			budget REAL,
 			special_requirements TEXT,
+			phone_number TEXT,
 			created_at TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_patients_email ON patients(email);
@@ -588,13 +593,54 @@ func (app *App) StoreCaregiver(c *Caregiver) error {
 
 func (app *App) StorePatient(p *Patient) error {
 	p.CreatedAt = time.Now()
+
+	// Check if patient exists
+	result, err := app.db.Query("SELECT email FROM patients WHERE email = ?", p.Email)
+	if err != nil {
+		return fmt.Errorf("failed to check patient existence: %v", err)
+	}
+	defer result.Close()
+
+	exists := false
+	err = result.Iterate(func(r *chai.Row) error {
+		exists = true
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to iterate results: %v", err)
+	}
+
+	if exists {
+		// Update existing patient
+		return app.db.Exec(`
+			UPDATE patients 
+			SET care_needs = ?,
+				location = ?,
+				schedule_requirements = ?,
+				budget = ?,
+				special_requirements = ?,
+				phone_number = ?
+			WHERE email = ?
+		`, p.CareNeeds, p.Location, p.ScheduleRequirements,
+			p.Budget, p.SpecialRequirements, p.PhoneNumber,
+			p.Email)
+	}
+
+	// Insert new patient
 	return app.db.Exec(`
 		INSERT INTO patients (
-			email, care_needs, location, schedule_requirements,
-			budget, special_requirements, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
+			email,
+			care_needs,
+			location,
+			schedule_requirements,
+			budget,
+			special_requirements,
+			phone_number,
+			created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, p.Email, p.CareNeeds, p.Location, p.ScheduleRequirements,
-		p.Budget, p.SpecialRequirements, p.CreatedAt)
+		p.Budget, p.SpecialRequirements, p.PhoneNumber,
+		p.CreatedAt)
 }
 
 func (app *App) CreateMatch(m *Match) error {
@@ -929,7 +975,7 @@ func (app *App) ListPatients() ([]Patient, error) {
 	err = result.Iterate(func(r *chai.Row) error {
 		var p Patient
 		if err := r.Scan(&p.Email, &p.CareNeeds, &p.Location, &p.ScheduleRequirements,
-			&p.Budget, &p.SpecialRequirements, &p.CreatedAt); err != nil {
+			&p.Budget, &p.SpecialRequirements, &p.PhoneNumber, &p.CreatedAt); err != nil {
 			return fmt.Errorf("failed to scan patient: %v", err)
 		}
 		patients = append(patients, p)
@@ -981,7 +1027,7 @@ func (app *App) FindMatchingCaregivers(patientEmail string) ([]Caregiver, error)
 	err = result.Iterate(func(r *chai.Row) error {
 		if err := r.Scan(&patient.Email, &patient.CareNeeds, &patient.Location,
 			&patient.ScheduleRequirements, &patient.Budget, &patient.SpecialRequirements,
-			&patient.CreatedAt); err != nil {
+			&patient.PhoneNumber, &patient.CreatedAt); err != nil {
 			return fmt.Errorf("failed to scan patient: %v", err)
 		}
 		found = true
@@ -1074,7 +1120,7 @@ func (app *App) FindMatchingPatients(caregiverEmail string) ([]Patient, error) {
 	err = result.Iterate(func(r *chai.Row) error {
 		var p Patient
 		if err := r.Scan(&p.Email, &p.CareNeeds, &p.Location, &p.ScheduleRequirements,
-			&p.Budget, &p.SpecialRequirements, &p.CreatedAt); err != nil {
+			&p.Budget, &p.SpecialRequirements, &p.PhoneNumber, &p.CreatedAt); err != nil {
 			return fmt.Errorf("failed to scan patient: %v", err)
 		}
 		patients = append(patients, p)
@@ -1305,7 +1351,7 @@ func processTestData(filename string) error {
 	return nil
 }
 
-// Update the formatting functions to include avatars
+// Update formatPatientList to include phone numbers for caregivers
 func formatPatientList(patients []Patient) string {
 	var sb strings.Builder
 
@@ -1327,13 +1373,16 @@ func formatPatientList(patients []Patient) string {
 		sb.WriteString("<li class='match-item'>")
 		sb.WriteString("<img src='/static/images/patient-avatar.png' alt='Patient Avatar' class='match-avatar'>")
 		sb.WriteString("<div class='match-details'>")
-		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", p.Email))
+		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", p.Name))
+		sb.WriteString(fmt.Sprintf("<span>✉️ Email: %s</span><br>", p.Email))
 		sb.WriteString(fmt.Sprintf("<span>📍 Location: %s</span><br>", p.Location))
 		sb.WriteString(fmt.Sprintf("<span>💰 Budget: $%.2f/hour</span><br>", p.Budget))
 		sb.WriteString(fmt.Sprintf("<span>🕒 Schedule: %s</span><br>", p.ScheduleRequirements))
 		sb.WriteString(fmt.Sprintf("<span>ℹ️ Care Needs: %s</span><br>", p.CareNeeds))
+		sb.WriteString(fmt.Sprintf("<span>📱 Contact: %s</span><br>", p.PhoneNumber))
+
 		if len(skills) > 0 {
-			sb.WriteString("<span>🎯 Skills: ")
+			sb.WriteString("<span>🎯 Skills needed: ")
 			for i, skill := range skills {
 				if i > 0 {
 					sb.WriteString(", ")
@@ -1370,11 +1419,13 @@ func formatCaregiverList(caregivers []Caregiver) string {
 		sb.WriteString("<li class='match-item'>")
 		sb.WriteString("<img src='/static/images/caregiver-avatar.png' alt='Caregiver Avatar' class='match-avatar'>")
 		sb.WriteString("<div class='match-details'>")
-		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", c.Email))
+		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", c.Name))
+		sb.WriteString(fmt.Sprintf("<span>✉️ Email: %s</span><br>", c.Email))
 		sb.WriteString(fmt.Sprintf("<span>📍 Location: %s</span><br>", c.Location))
 		sb.WriteString(fmt.Sprintf("<span>💰 Rate: $%.2f/hour</span><br>", c.RateExpectations))
 		sb.WriteString(fmt.Sprintf("<span>🕒 Availability: %s</span><br>", c.Availability))
-		sb.WriteString(fmt.Sprintf("<span>🎯 Specializations: %s</span><br>", c.Specializations))
+		sb.WriteString(fmt.Sprintf("<span>📚 Experience: %s</span><br>", c.Experience))
+		sb.WriteString(fmt.Sprintf("<span>🎓 Certifications: %s</span><br>", c.Certifications))
 		if len(skills) > 0 {
 			sb.WriteString("<span>🎯 Skills: ")
 			for i, skill := range skills {
@@ -1441,6 +1492,7 @@ func handleOpenAIResponse(resp *ChatResponse, email string, app *App) error {
 		case "store_caregiver":
 			caregiver := &Caregiver{
 				Email:            email, // Use current user's email
+				Name:             getStringArg(args, "name", ""),
 				Experience:       getStringArg(args, "experience", ""),
 				Location:         getStringArg(args, "location", ""),
 				Availability:     getStringArg(args, "availability", ""),
@@ -1457,11 +1509,14 @@ func handleOpenAIResponse(resp *ChatResponse, email string, app *App) error {
 		case "store_patient":
 			patient := &Patient{
 				Email:                email, // Use current user's email
+				Name:                 getStringArg(args, "name", ""),
 				CareNeeds:            getStringArg(args, "care_needs", ""),
 				Location:             getStringArg(args, "location", ""),
 				ScheduleRequirements: getStringArg(args, "schedule_requirements", ""),
 				Budget:               getFloatArg(args, "budget", 0),
 				SpecialRequirements:  getStringArg(args, "special_requirements", ""),
+				PhoneNumber:          getStringArg(args, "phone_number", ""),
+				CreatedAt:            time.Now(),
 			}
 			if err := app.StorePatient(patient); err != nil {
 				response = fmt.Sprintf("Error storing patient: %v", err)
@@ -1528,11 +1583,13 @@ func (app *App) handlePatientRegistration(email string, messages []Message) erro
 	// Extract patient information from messages
 	patient := &Patient{
 		Email:                email,
+		Name:                 extractName(messages),
 		CareNeeds:            extractCareNeeds(messages),
 		Location:             extractLocation(messages),
 		ScheduleRequirements: extractSchedule(messages),
 		Budget:               extractBudget(messages),
 		SpecialRequirements:  extractSpecialRequirements(messages),
+		PhoneNumber:          extractPhoneNumber(messages),
 		CreatedAt:            time.Now(),
 	}
 
@@ -1541,6 +1598,18 @@ func (app *App) handlePatientRegistration(email string, messages []Message) erro
 }
 
 // Helper functions to extract information from messages
+func extractName(messages []Message) string {
+	for _, msg := range messages {
+		if strings.Contains(strings.ToLower(msg.Content), "i'm") {
+			parts := strings.Split(msg.Content, "i'm ")
+			if len(parts) > 1 {
+				return strings.TrimSpace(parts[1])
+			}
+		}
+	}
+	return ""
+}
+
 func extractCareNeeds(messages []Message) string {
 	for _, msg := range messages {
 		if strings.Contains(strings.ToLower(msg.Content), "elderly care") ||
@@ -1596,6 +1665,18 @@ func extractSpecialRequirements(messages []Message) string {
 		if strings.Contains(strings.ToLower(msg.Content), "must have") ||
 			strings.Contains(strings.ToLower(msg.Content), "require") {
 			return msg.Content
+		}
+	}
+	return ""
+}
+
+func extractPhoneNumber(messages []Message) string {
+	for _, msg := range messages {
+		if strings.Contains(strings.ToLower(msg.Content), "phone") {
+			parts := strings.Split(msg.Content, "phone: ")
+			if len(parts) > 1 {
+				return strings.TrimSpace(parts[1])
+			}
 		}
 	}
 	return ""
@@ -1703,11 +1784,13 @@ func (app *App) handleChat(email string, message string) (string, error) {
 		// Register the patient
 		patient := &Patient{
 			Email:                email,
+			Name:                 extractName(messages),
 			CareNeeds:            extractCareNeeds(messages),
 			Location:             extractLocation(messages),
 			ScheduleRequirements: extractSchedule(messages),
 			Budget:               extractBudget(messages),
 			SpecialRequirements:  extractSpecialRequirements(messages),
+			PhoneNumber:          extractPhoneNumber(messages),
 			CreatedAt:            time.Now(),
 		}
 
@@ -1734,4 +1817,154 @@ func (app *App) handleChat(email string, message string) (string, error) {
 
 	// Rest of chat handling...
 	return "", nil
+}
+
+// Add helper function to check if user is a caregiver
+func (app *App) IsCaregiver(email string) bool {
+	result, err := app.db.Query("SELECT 1 FROM caregivers WHERE email = ?", email)
+	if err != nil {
+		return false
+	}
+	defer result.Close()
+
+	var exists bool
+	result.Iterate(func(r *chai.Row) error {
+		exists = true
+		return nil
+	})
+	return exists
+}
+
+func (app *App) processPatientRegistration(email, content string) error {
+	var patient Patient
+	patient.Email = email
+
+	// Extract name using regex
+	nameRegex := regexp.MustCompile(`I'm ([^,\.]+)`)
+	if matches := nameRegex.FindStringSubmatch(content); len(matches) > 1 {
+		patient.Name = strings.TrimSpace(matches[1])
+	}
+
+	// Extract phone number
+	phoneRegex := regexp.MustCompile(`\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}`)
+	if phone := phoneRegex.FindString(content); phone != "" {
+		patient.PhoneNumber = phone
+	}
+
+	// Extract other fields based on content
+	if strings.Contains(strings.ToLower(content), "budget") {
+		// Extract budget amount
+		budgetRegex := regexp.MustCompile(`\$?(\d+)(?:\.?\d*)?\/hour`)
+		if matches := budgetRegex.FindStringSubmatch(content); len(matches) > 1 {
+			if budget, err := strconv.ParseFloat(matches[1], 64); err == nil {
+				patient.Budget = budget
+			}
+		}
+	}
+
+	// Extract location if mentioned
+	if strings.Contains(strings.ToLower(content), "located in") ||
+		strings.Contains(strings.ToLower(content), "location") {
+		locationRegex := regexp.MustCompile(`(?:located in|location[:\s]+)(.*?)(?:\.|$)`)
+		if matches := locationRegex.FindStringSubmatch(content); len(matches) > 1 {
+			patient.Location = strings.TrimSpace(matches[1])
+		}
+	}
+
+	// Extract schedule requirements
+	if strings.Contains(strings.ToLower(content), "need") &&
+		(strings.Contains(strings.ToLower(content), "schedule") ||
+			strings.Contains(strings.ToLower(content), "hours")) {
+		scheduleRegex := regexp.MustCompile(`need[^.]*(?:schedule|hours)[^.]*\.`)
+		if schedule := scheduleRegex.FindString(content); schedule != "" {
+			patient.ScheduleRequirements = strings.TrimSpace(schedule)
+		}
+	}
+
+	// Extract care needs and special requirements
+	if strings.Contains(strings.ToLower(content), "need") ||
+		strings.Contains(strings.ToLower(content), "require") {
+		needsRegex := regexp.MustCompile(`(?:need|require)[^.]*\.`)
+		if needs := needsRegex.FindString(content); needs != "" {
+			if patient.CareNeeds == "" {
+				patient.CareNeeds = strings.TrimSpace(needs)
+			} else {
+				patient.SpecialRequirements = strings.TrimSpace(needs)
+			}
+		}
+	}
+
+	// Only store patient if we have the required fields
+	if patient.Location != "" && patient.Budget > 0 && patient.PhoneNumber != "" && patient.Name != "" {
+		if err := app.StorePatient(&patient); err != nil {
+			return fmt.Errorf("failed to store patient: %v", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("missing required patient information")
+}
+
+func (app *App) processCaregiverRegistration(email, content string) error {
+	var caregiver Caregiver
+	caregiver.Email = email
+
+	// Extract name using regex
+	nameRegex := regexp.MustCompile(`I'm ([^,\.]+)`)
+	if matches := nameRegex.FindStringSubmatch(content); len(matches) > 1 {
+		caregiver.Name = strings.TrimSpace(matches[1])
+	}
+
+	// Extract other fields based on content
+	if strings.Contains(strings.ToLower(content), "budget") {
+		// Extract budget amount
+		budgetRegex := regexp.MustCompile(`\$?(\d+)(?:\.?\d*)?\/hour`)
+		if matches := budgetRegex.FindStringSubmatch(content); len(matches) > 1 {
+			if budget, err := strconv.ParseFloat(matches[1], 64); err == nil {
+				caregiver.RateExpectations = budget
+			}
+		}
+	}
+
+	// Extract location if mentioned
+	if strings.Contains(strings.ToLower(content), "located in") ||
+		strings.Contains(strings.ToLower(content), "location") {
+		locationRegex := regexp.MustCompile(`(?:located in|location[:\s]+)(.*?)(?:\.|$)`)
+		if matches := locationRegex.FindStringSubmatch(content); len(matches) > 1 {
+			caregiver.Location = strings.TrimSpace(matches[1])
+		}
+	}
+
+	// Extract schedule requirements
+	if strings.Contains(strings.ToLower(content), "need") &&
+		(strings.Contains(strings.ToLower(content), "schedule") ||
+			strings.Contains(strings.ToLower(content), "hours")) {
+		scheduleRegex := regexp.MustCompile(`need[^.]*(?:schedule|hours)[^.]*\.`)
+		if schedule := scheduleRegex.FindString(content); schedule != "" {
+			caregiver.Experience = strings.TrimSpace(schedule)
+		}
+	}
+
+	// Extract care needs and special requirements
+	if strings.Contains(strings.ToLower(content), "need") ||
+		strings.Contains(strings.ToLower(content), "require") {
+		needsRegex := regexp.MustCompile(`(?:need|require)[^.]*\.`)
+		if needs := needsRegex.FindString(content); needs != "" {
+			if caregiver.Experience == "" {
+				caregiver.Experience = strings.TrimSpace(needs)
+			} else {
+				caregiver.Certifications = strings.TrimSpace(needs)
+			}
+		}
+	}
+
+	// Only store caregiver if we have the required fields
+	if caregiver.Location != "" && caregiver.RateExpectations > 0 && caregiver.Name != "" {
+		if err := app.StoreCaregiver(&caregiver); err != nil {
+			return fmt.Errorf("failed to store caregiver: %v", err)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("missing required caregiver information")
 }
