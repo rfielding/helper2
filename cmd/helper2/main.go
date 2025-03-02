@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"html/template"
 	"io"
@@ -174,7 +175,7 @@ const (
         <div id="messages">
             {{range .Messages}}
             <div class="message {{.Role}}">
-                <strong>{{.Role}}:</strong> {{.Content | html}}
+                <strong>{{.Role}}:</strong> {{.Content | safeHTML}}
             </div>
             {{end}}
         </div>
@@ -801,7 +802,12 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		UserEmail: userEmail,
 	}
 
-	tmpl, err := template.New("chat").Parse(htmlTemplate)
+	// Create template with the safeHTML function
+	tmpl, err := template.New("chat").Funcs(template.FuncMap{
+		"safeHTML": func(s string) template.HTML {
+			return template.HTML(s)
+		},
+	}).Parse(htmlTemplate)
 	if err != nil {
 		http.Error(w, "Failed to parse template", http.StatusInternalServerError)
 		return
@@ -1255,19 +1261,23 @@ func formatPatientList(patients []Patient) string {
 	var sb strings.Builder
 
 	if len(patients) == 0 {
-		return "No matching patients found."
+		return "<p>No matching patients found.</p>"
 	}
 
-	sb.WriteString("Matching patients:\n\n")
+	sb.WriteString("<h3>Matching Patients</h3>")
+	sb.WriteString("<ul class='matches-list'>")
 
 	for _, p := range patients {
-		sb.WriteString(fmt.Sprintf("• %s\n", p.Email))
-		sb.WriteString(fmt.Sprintf("  Location: %s\n", p.Location))
-		sb.WriteString(fmt.Sprintf("  Budget: $%.2f/hour\n", p.Budget))
-		sb.WriteString(fmt.Sprintf("  Schedule: %s\n", p.ScheduleRequirements))
-		sb.WriteString(fmt.Sprintf("  Care Needs: %s\n\n", p.CareNeeds))
+		sb.WriteString("<li class='match-item'>")
+		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", p.Email))
+		sb.WriteString(fmt.Sprintf("<span>📍 Location: %s</span><br>", p.Location))
+		sb.WriteString(fmt.Sprintf("<span>💰 Budget: $%.2f/hour</span><br>", p.Budget))
+		sb.WriteString(fmt.Sprintf("<span>🕒 Schedule: %s</span><br>", p.ScheduleRequirements))
+		sb.WriteString(fmt.Sprintf("<span>ℹ️ Care Needs: %s</span>", p.CareNeeds))
+		sb.WriteString("</li>")
 	}
 
+	sb.WriteString("</ul>")
 	return sb.String()
 }
 
@@ -1275,19 +1285,23 @@ func formatCaregiverList(caregivers []Caregiver) string {
 	var sb strings.Builder
 
 	if len(caregivers) == 0 {
-		return "No matching caregivers found."
+		return "<p>No matching caregivers found.</p>"
 	}
 
-	sb.WriteString("Matching caregivers:\n\n")
+	sb.WriteString("<h3>Matching Caregivers</h3>")
+	sb.WriteString("<ul class='matches-list'>")
 
 	for _, c := range caregivers {
-		sb.WriteString(fmt.Sprintf("• %s\n", c.Email))
-		sb.WriteString(fmt.Sprintf("  Location: %s\n", c.Location))
-		sb.WriteString(fmt.Sprintf("  Rate: $%.2f/hour\n", c.RateExpectations))
-		sb.WriteString(fmt.Sprintf("  Availability: %s\n", c.Availability))
-		sb.WriteString(fmt.Sprintf("  Specializations: %s\n\n", c.Specializations))
+		sb.WriteString("<li class='match-item'>")
+		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", c.Email))
+		sb.WriteString(fmt.Sprintf("<span>📍 Location: %s</span><br>", c.Location))
+		sb.WriteString(fmt.Sprintf("<span>💰 Rate: $%.2f/hour</span><br>", c.RateExpectations))
+		sb.WriteString(fmt.Sprintf("<span>🕒 Availability: %s</span><br>", c.Availability))
+		sb.WriteString(fmt.Sprintf("<span>👩 Specializations: %s</span><br>", c.Specializations))
+		sb.WriteString("</li>")
 	}
 
+	sb.WriteString("</ul>")
 	return sb.String()
 }
 
@@ -1544,7 +1558,10 @@ func hasAllRequiredInfo(messages []Message) bool {
 	return hasCareNeeds && hasLocation && hasSchedule && hasBudget
 }
 
+var loadTest = flag.Bool("test", false, "Load test data on startup")
+
 func main() {
+	flag.Parse()
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
 		log.Fatal("OPENAI_API_KEY environment variable is required")
@@ -1561,16 +1578,20 @@ func main() {
 	http.HandleFunc("/chat", handleChat)
 
 	// Process test data if the file exists
-	if _, err := os.Stat("testdata.txt"); err == nil {
-		log.Println("Processing test data...")
-		if err := processTestData("testdata.txt"); err != nil {
-			log.Printf("Error processing test data: %v", err)
-		}
-		log.Println("Completed processing test data")
+	go func() {
+		if *loadTest {
+			if _, err := os.Stat("testdata.txt"); err == nil {
+				log.Println("Processing test data...")
+				if err := processTestData("testdata.txt"); err != nil {
+					log.Printf("Error processing test data: %v", err)
+				}
+				log.Println("Completed processing test data")
 
-		// Run matching tests after processing test data
-		testAllMatches(chatRoom)
-	}
+				// Run matching tests after processing test data
+				testAllMatches(chatRoom)
+			}
+		}
+	}()
 
 	port := ":8080"
 	fmt.Printf("Server starting on http://localhost%s\n", port)
