@@ -106,61 +106,107 @@ const (
 <head>
     <title>Helper - Connecting Caregivers to Patients</title>
     <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --text-color: #e0e0e0;
+            --primary-color: #4CAF50;
+            --primary-hover: #45a049;
+            --secondary-bg: #2d2d2d;
+            --border-color: #404040;
+            --highlight-bg: #333333;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            line-height: 1.6;
+        }
+
         .header {
             text-align: center;
             margin-bottom: 20px;
+            padding: 20px;
+            background-color: var(--secondary-bg);
+            border-bottom: 1px solid var(--border-color);
         }
+
         .red-cross {
-            color: #FF0000;
+            color: #FF4444;
             font-size: 2em;
             margin-bottom: 10px;
         }
+
         .app-description {
-            color: #666;
+            color: #888;
             font-style: italic;
             margin-bottom: 20px;
         }
+
         .chat-container {
             max-width: 800px;
             margin: 0 auto;
             padding: 20px;
         }
+
         .message {
             margin: 10px 0;
-            padding: 10px;
-            border-radius: 5px;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
         }
+
         .user {
-            background-color: #e3f2fd;
+            background-color: #2c3e50;
         }
+
         .assistant {
-            background-color: #f5f5f5;
+            background-color: var(--secondary-bg);
         }
+
         .system {
-            background-color: #fff3e0;
+            background-color: #2c3440;
         }
+
         .message-form {
             display: flex;
             gap: 10px;
             margin-top: 20px;
+            background-color: var(--secondary-bg);
+            padding: 15px;
+            border-radius: 8px;
         }
+
         .message-input {
             flex-grow: 1;
-            padding: 8px;
-            border: 1px solid #ddd;
+            padding: 12px;
+            border: 1px solid var(--border-color);
             border-radius: 4px;
+            background-color: var(--bg-color);
+            color: var(--text-color);
         }
+
+        .message-input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+        }
+
         .send-button {
-            padding: 8px 16px;
-            background-color: #4CAF50;
+            padding: 12px 24px;
+            background-color: var(--primary-color);
             color: white;
             border: none;
             border-radius: 4px;
             cursor: pointer;
+            font-weight: bold;
         }
+
         .send-button:hover {
-            background-color: #45a049;
+            background-color: var(--primary-hover);
         }
+
         .avatar {
             width: 40px;
             height: 40px;
@@ -168,49 +214,116 @@ const (
             object-fit: cover;
             margin-right: 10px;
             vertical-align: middle;
+            border: 2px solid var(--border-color);
         }
+
         .user-email {
             text-align: right;
-            color: #666;
-            margin-bottom: 10px;
+            color: #888;
+            margin-bottom: 20px;
             display: flex;
             align-items: center;
             justify-content: flex-end;
             gap: 10px;
+            padding: 10px;
+            background-color: var(--secondary-bg);
+            border-radius: 8px;
         }
+
         .matches-list {
             list-style: none;
             padding: 0;
             margin: 0;
         }
+
         .match-item {
-            background: #ffffff;
-            border: 1px solid #e0e0e0;
+            background: var(--secondary-bg);
+            border: 1px solid var(--border-color);
             border-radius: 8px;
-            padding: 15px;
-            margin: 10px 0;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            padding: 20px;
+            margin: 15px 0;
             display: flex;
             align-items: center;
-            gap: 15px;
+            gap: 20px;
+            transition: transform 0.2s;
         }
+
+        .match-item:hover {
+            transform: translateY(-2px);
+        }
+
         .match-avatar {
             width: 60px;
             height: 60px;
             border-radius: 50%;
             object-fit: cover;
+            border: 2px solid var(--border-color);
         }
+
         .match-details {
             flex-grow: 1;
         }
+
         .match-details span {
             display: block;
             margin: 5px 0;
-            color: #666;
+            color: #888;
         }
+
         .match-details strong {
-            color: #333;
+            color: var(--text-color);
             font-size: 1.1em;
+        }
+
+        .calendar {
+            background-color: var(--secondary-bg);
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+
+        .calendar-day {
+            border-bottom: 1px solid var(--border-color);
+            padding: 10px 0;
+        }
+
+        .calendar-event {
+            background-color: var(--highlight-bg);
+            border-radius: 4px;
+            padding: 10px;
+            margin: 5px 0;
+        }
+
+        .schedule-form {
+            margin-top: 10px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .schedule-form input[type="date"],
+        .schedule-form select {
+            padding: 8px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+
+        .schedule-form button {
+            padding: 8px 16px;
+            background-color: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .schedule-form button:hover {
+            background-color: var(--primary-hover);
+        }
+
+        h1, h2, h3, h4 {
+            color: var(--text-color);
         }
     </style>
 </head>
