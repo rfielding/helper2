@@ -253,6 +253,7 @@ and DO NOT ask for it again. You can see it in their messages history.
 For new users, first determine if they are a caregiver or patient by asking about their role.
 
 Required information for caregivers:
+- Full name
 - Experience and certifications
 - Location
 - Availability
@@ -260,17 +261,20 @@ Required information for caregivers:
 - Rate expectations (hourly rate in dollars)
 
 Required information for patients:
+- Full name
 - Care needs
 - Location
 - Schedule requirements
 - Budget (hourly rate in dollars)
 - Special requirements
+- Phone number (REQUIRED for contact purposes)
 
 Once you have collected all required information:
 - For caregivers: Confirm their registration and offer to show matching patients
 - For patients: Show them matching caregivers immediately
 
 Always maintain context from previous messages to avoid asking for information that was already provided.
+If a patient hasn't provided their phone number, ask for it before proceeding with registration.
 `
 
 // Add these new types and methods
@@ -469,13 +473,24 @@ type Skill struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// Add Assignment type
+type Assignment struct {
+	ID             int64     `json:"id"`
+	CaregiverEmail string    `json:"caregiver_email"`
+	PatientEmail   string    `json:"patient_email"`
+	StartTime      time.Time `json:"start_time"`
+	EndTime        time.Time `json:"end_time"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
 func NewApp(apiKey string) (*App, error) {
 	db, err := chai.Open(dbFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %v", err)
 	}
 
-	// Update schema with IF NOT EXISTS for indexes
+	// First create tables without foreign key constraints
 	err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS caregivers (
 			email TEXT PRIMARY KEY,
@@ -533,6 +548,31 @@ func NewApp(apiKey string) (*App, error) {
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create schema: %v", err)
+	}
+
+	// Create assignments table separately
+	err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS assignments (
+			id INTEGER PRIMARY KEY,
+			caregiver_email TEXT,
+			patient_email TEXT,
+			start_time TIMESTAMP,
+			end_time TIMESTAMP,
+			status TEXT CHECK(status IN ('scheduled', 'completed', 'cancelled')),
+			created_at TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create assignments table: %v", err)
+	}
+
+	// Create indexes for assignments table
+	err = db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_assignments_caregiver_time ON assignments(caregiver_email, start_time);
+			CREATE INDEX IF NOT EXISTS idx_assignments_patient_time ON assignments(patient_email, start_time)
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create assignments indexes: %v", err)
 	}
 
 	return &App{
@@ -729,8 +769,12 @@ func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 						"type":        "string",
 						"description": "Any special requirements",
 					},
+					"phone_number": map[string]interface{}{
+						"type":        "string",
+						"description": "Patient's contact phone number (required)",
+					},
 				},
-				"required": []string{"email", "name", "care_needs", "location"},
+				"required": []string{"email", "name", "care_needs", "location", "phone_number"},
 			},
 		},
 		{
@@ -838,6 +882,7 @@ func (fc *FunctionCall) GetArguments() (map[string]interface{}, error) {
 type TemplateData struct {
 	Messages  []Message
 	UserEmail string
+	Calendar  string
 }
 
 // Update handleChat function to include user email
@@ -845,6 +890,12 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 	userEmail := r.URL.Query().Get("email")
 	if userEmail == "" {
 		userEmail = r.FormValue("email")
+	}
+
+	// Create a PageData instance to store all template data
+	data := PageData{
+		Messages:  chatRoom.GetUserMessages(userEmail),
+		UserEmail: userEmail,
 	}
 
 	if r.Method == "POST" {
@@ -893,13 +944,16 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle GET request
-	log.Printf("Getting messages for email: %s", userEmail)
-	messages := chatRoom.GetUserMessages(userEmail)
-
-	data := TemplateData{
-		Messages:  messages,
-		UserEmail: userEmail,
+	// If user is a caregiver, get and display their schedule
+	if chatRoom.IsCaregiver(userEmail) {
+		now := time.Now()
+		weekFromNow := now.AddDate(0, 0, 7)
+		assignments, err := chatRoom.GetCaregiverSchedule(userEmail, now, weekFromNow)
+		if err != nil {
+			log.Printf("Error getting schedule: %v", err)
+		} else {
+			data.Calendar = formatCalendar(assignments)
+		}
 	}
 
 	// Create template with the safeHTML function
@@ -1018,7 +1072,7 @@ func (app *App) ListCaregivers() ([]Caregiver, error) {
 	return caregivers, nil
 }
 
-// FindMatchingCaregivers finds caregivers that match a patient's requirements
+// Update FindMatchingCaregivers to remove location filter
 func (app *App) FindMatchingCaregivers(patientEmail string) ([]Caregiver, error) {
 	// First get the patient's requirements
 	var patient Patient
@@ -1045,17 +1099,12 @@ func (app *App) FindMatchingCaregivers(patientEmail string) ([]Caregiver, error)
 		return nil, fmt.Errorf("patient not found")
 	}
 
-	log.Printf("Finding caregivers for patient %s (Location: %s, Budget: $%.2f)",
-		patient.Email, patient.Location, patient.Budget)
-
-	// Fixed query syntax by removing the CASE statement
+	// Only filter by budget, not location
 	result, err = app.db.Query(`
 		SELECT * FROM caregivers 
-		WHERE LOWER(location) LIKE LOWER(?) 
-		AND rate_expectations <= ?
-		ORDER BY 
-			rate_expectations ASC
-	`, "%"+patient.Location+"%", patient.Budget)
+		WHERE rate_expectations <= ?
+		ORDER BY rate_expectations ASC
+	`, patient.Budget)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query matching caregivers: %v", err)
 	}
@@ -1071,14 +1120,11 @@ func (app *App) FindMatchingCaregivers(patientEmail string) ([]Caregiver, error)
 		caregivers = append(caregivers, c)
 		return nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to iterate matching caregivers: %v", err)
-	}
 
 	return caregivers, nil
 }
 
-// FindMatchingPatients finds patients that match a caregiver's criteria
+// Update FindMatchingPatients to remove location filter
 func (app *App) FindMatchingPatients(caregiverEmail string) ([]Patient, error) {
 	// First get the caregiver's details
 	var caregiver Caregiver
@@ -1105,17 +1151,12 @@ func (app *App) FindMatchingPatients(caregiverEmail string) ([]Patient, error) {
 		return nil, fmt.Errorf("caregiver not found")
 	}
 
-	log.Printf("Finding patients for caregiver %s (Location: %s, Rate: $%.2f)",
-		caregiver.Email, caregiver.Location, caregiver.RateExpectations)
-
-	// Fixed query syntax by removing the CASE statement
+	// Only filter by budget, not location
 	result, err = app.db.Query(`
 		SELECT * FROM patients 
-		WHERE LOWER(location) LIKE LOWER(?) 
-		AND budget >= ?
-		ORDER BY 
-			budget DESC
-	`, "%"+caregiver.Location+"%", caregiver.RateExpectations)
+		WHERE budget >= ?
+		ORDER BY budget DESC
+	`, caregiver.RateExpectations)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query matching patients: %v", err)
 	}
@@ -1131,9 +1172,6 @@ func (app *App) FindMatchingPatients(caregiverEmail string) ([]Patient, error) {
 		patients = append(patients, p)
 		return nil
 	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to iterate matching patients: %v", err)
-	}
 
 	return patients, nil
 }
@@ -1356,10 +1394,9 @@ func processTestData(filename string) error {
 	return nil
 }
 
-// Update formatPatientList to include phone numbers for caregivers
-func formatPatientList(patients []Patient) string {
+// Update formatPatientList to include accept buttons for caregivers
+func formatPatientList(patients []Patient, isCaregiver bool) string {
 	var sb strings.Builder
-
 	if len(patients) == 0 {
 		return "<p>No matching patients found.</p>"
 	}
@@ -1368,37 +1405,36 @@ func formatPatientList(patients []Patient) string {
 	sb.WriteString("<ul class='matches-list'>")
 
 	for _, p := range patients {
-		// Get skills for this patient
-		skills, err := chatRoom.GetSkills(p.Email)
-		if err != nil {
-			log.Printf("Error getting skills for patient %s: %v", p.Email, err)
-			skills = []string{} // Use empty list if error
-		}
-
 		sb.WriteString("<li class='match-item'>")
 		sb.WriteString("<img src='static/images/default-avatar.png' alt='Patient Avatar' class='match-avatar'>")
 		sb.WriteString("<div class='match-details'>")
 		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", p.Name))
-		sb.WriteString(fmt.Sprintf("<span>✉️ Email: %s</span><br>", p.Email))
-		sb.WriteString(fmt.Sprintf("<span>📍 Location: %s</span><br>", p.Location))
+		sb.WriteString(fmt.Sprintf("<span>📍 %s</span><br>", p.Location))
 		sb.WriteString(fmt.Sprintf("<span>💰 Budget: $%.2f/hour</span><br>", p.Budget))
 		sb.WriteString(fmt.Sprintf("<span>🕒 Schedule: %s</span><br>", p.ScheduleRequirements))
 		sb.WriteString(fmt.Sprintf("<span>ℹ️ Care Needs: %s</span><br>", p.CareNeeds))
-		sb.WriteString(fmt.Sprintf("<span>📱 Contact: %s</span><br>", p.PhoneNumber))
 
-		if len(skills) > 0 {
-			sb.WriteString("<span>🎯 Skills needed: ")
-			for i, skill := range skills {
-				if i > 0 {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(skill)
-			}
-			sb.WriteString("</span>")
+		if isCaregiver {
+			// Add schedule selection form
+			sb.WriteString(`<form class="schedule-form" action="schedule" method="POST">
+				<input type="hidden" name="patient_email" value="`)
+			sb.WriteString(p.Email)
+			sb.WriteString(`">
+				<input type="date" name="date" required>
+				<select name="time" required>
+					<option value="morning">Morning (8am-12pm)</option>
+					<option value="afternoon">Afternoon (12pm-4pm)</option>
+					<option value="evening">Evening (4pm-8pm)</option>
+				</select>
+				<button type="submit">Schedule Care</button>
+			</form>`)
+		} else {
+			// Show contact info for patients
+			sb.WriteString(fmt.Sprintf("<span>📱 Contact: %s</span><br>", p.PhoneNumber))
 		}
+
 		sb.WriteString("</div></li>")
 	}
-
 	sb.WriteString("</ul>")
 	return sb.String()
 }
@@ -1467,7 +1503,7 @@ func handleOpenAIResponse(resp *ChatResponse, email string, app *App) error {
 			if err != nil {
 				response = fmt.Sprintf("Error listing patients: %v", err)
 			} else {
-				response = formatPatientList(patients)
+				response = formatPatientList(patients, true)
 			}
 
 		case "list_caregivers":
@@ -1491,7 +1527,7 @@ func handleOpenAIResponse(resp *ChatResponse, email string, app *App) error {
 			if err != nil {
 				response = fmt.Sprintf("Error finding matches: %v", err)
 			} else {
-				response = formatPatientList(patients)
+				response = formatPatientList(patients, true)
 			}
 
 		case "store_caregiver":
@@ -1752,8 +1788,9 @@ func main() {
 	fs := http.FileServer(http.Dir("static"))
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
 
-	http.HandleFunc("/", handleChat)
+	http.HandleFunc("/", handleRoot)
 	http.HandleFunc("/chat", handleChat)
+	http.HandleFunc("/schedule", handleSchedule)
 
 	// Process test data if the file exists
 	go func() {
@@ -1972,4 +2009,219 @@ func (app *App) processCaregiverRegistration(email, content string) error {
 	}
 
 	return fmt.Errorf("missing required caregiver information")
+}
+
+func (app *App) AcceptMatch(caregiverEmail, patientEmail string, startTime, endTime time.Time) error {
+	// Check if either party is already booked for this time
+	result, err := app.db.Query(`
+		SELECT 1 FROM assignments 
+		WHERE (caregiver_email = ? OR patient_email = ?)
+		AND start_time < ? AND end_time > ?
+		AND status = 'scheduled'
+	`, caregiverEmail, patientEmail, endTime, startTime)
+	if err != nil {
+		return fmt.Errorf("failed to check schedule: %v", err)
+	}
+	defer result.Close()
+
+	hasConflict := false
+	result.Iterate(func(r *chai.Row) error {
+		hasConflict = true
+		return nil
+	})
+	if hasConflict {
+		return fmt.Errorf("time slot is not available")
+	}
+
+	// Create the assignment
+	return app.db.Exec(`
+		INSERT INTO assignments (
+			caregiver_email, patient_email, 
+			start_time, end_time, 
+			status, created_at
+		) VALUES (?, ?, ?, ?, 'scheduled', ?)
+	`, caregiverEmail, patientEmail, startTime, endTime, time.Now())
+}
+
+func (app *App) GetCaregiverSchedule(email string, start, end time.Time) ([]Assignment, error) {
+	result, err := app.db.Query(`
+		SELECT id, caregiver_email, patient_email, start_time, end_time, status, created_at 
+		FROM assignments
+		WHERE caregiver_email = ?
+		AND start_time >= ? AND start_time < ?
+		ORDER BY start_time
+	`, email, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query assignments: %v", err)
+	}
+	defer result.Close()
+
+	var assignments []Assignment
+	err = result.Iterate(func(r *chai.Row) error {
+		var a Assignment
+		if err := r.Scan(&a.ID, &a.CaregiverEmail, &a.PatientEmail,
+			&a.StartTime, &a.EndTime, &a.Status, &a.CreatedAt); err != nil {
+			return fmt.Errorf("failed to scan assignment: %v", err)
+		}
+		assignments = append(assignments, a)
+		return nil
+	})
+	return assignments, err
+}
+
+func (app *App) GetPatientSchedule(email string, start, end time.Time) ([]Assignment, error) {
+	result, err := app.db.Query(`
+		SELECT id, caregiver_email, patient_email, start_time, end_time, status, created_at 
+		FROM assignments
+		WHERE patient_email = ?
+		AND start_time >= ? AND start_time < ?
+		ORDER BY start_time
+	`, email, start, end)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query assignments: %v", err)
+	}
+	defer result.Close()
+
+	var assignments []Assignment
+	err = result.Iterate(func(r *chai.Row) error {
+		var a Assignment
+		if err := r.Scan(&a.ID, &a.CaregiverEmail, &a.PatientEmail,
+			&a.StartTime, &a.EndTime, &a.Status, &a.CreatedAt); err != nil {
+			return fmt.Errorf("failed to scan assignment: %v", err)
+		}
+		assignments = append(assignments, a)
+		return nil
+	})
+	return assignments, err
+}
+
+// Add handler for schedule submissions
+func handleSchedule(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	caregiverEmail := r.FormValue("email")
+	patientEmail := r.FormValue("patient_email")
+	dateStr := r.FormValue("date")
+	timeSlot := r.FormValue("time")
+
+	// Parse date and create time slots
+	date, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		http.Error(w, "Invalid date format", http.StatusBadRequest)
+		return
+	}
+
+	var startTime, endTime time.Time
+	switch timeSlot {
+	case "morning":
+		startTime = time.Date(date.Year(), date.Month(), date.Day(), 8, 0, 0, 0, date.Location())
+		endTime = time.Date(date.Year(), date.Month(), date.Day(), 12, 0, 0, 0, date.Location())
+	case "afternoon":
+		startTime = time.Date(date.Year(), date.Month(), date.Day(), 12, 0, 0, 0, date.Location())
+		endTime = time.Date(date.Year(), date.Month(), date.Day(), 16, 0, 0, 0, date.Location())
+	case "evening":
+		startTime = time.Date(date.Year(), date.Month(), date.Day(), 16, 0, 0, 0, date.Location())
+		endTime = time.Date(date.Year(), date.Month(), date.Day(), 20, 0, 0, 0, date.Location())
+	default:
+		http.Error(w, "Invalid time slot", http.StatusBadRequest)
+		return
+	}
+
+	if err := chatRoom.AcceptMatch(caregiverEmail, patientEmail, startTime, endTime); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to schedule: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, fmt.Sprintf("/?email=%s", url.QueryEscape(caregiverEmail)), http.StatusSeeOther)
+}
+
+func formatCalendar(assignments []Assignment) string {
+	var sb strings.Builder
+	sb.WriteString("<h3>Your Schedule</h3>")
+	sb.WriteString("<div class='calendar'>")
+
+	// Group assignments by date
+	byDate := make(map[string][]Assignment)
+	for _, a := range assignments {
+		date := a.StartTime.Format("2006-01-02")
+		byDate[date] = append(byDate[date], a)
+	}
+
+	// Show next 7 days
+	now := time.Now()
+	for i := 0; i < 7; i++ {
+		date := now.AddDate(0, 0, i)
+		dateStr := date.Format("2006-01-02")
+		sb.WriteString(fmt.Sprintf("<div class='calendar-day'><h4>%s</h4>", date.Format("Mon Jan 2")))
+
+		if assignments, ok := byDate[dateStr]; ok {
+			for _, a := range assignments {
+				sb.WriteString(fmt.Sprintf(`
+					<div class='calendar-event'>
+						<span>%s - %s</span><br>
+						<span>Patient: %s</span>
+					</div>`,
+					a.StartTime.Format("3:04 PM"),
+					a.EndTime.Format("3:04 PM"),
+					a.PatientEmail,
+				))
+			}
+		}
+		sb.WriteString("</div>")
+	}
+	sb.WriteString("</div>")
+	return sb.String()
+}
+
+// Add this struct at the top level with other type definitions
+type PageData struct {
+	Messages  []Message
+	UserEmail string
+	Calendar  string
+}
+
+// Update handleRoot function
+func handleRoot(w http.ResponseWriter, r *http.Request) {
+	email := r.URL.Query().Get("email")
+	if email == "" {
+		http.Error(w, "Email is required", http.StatusBadRequest)
+		return
+	}
+
+	// Create the PageData instance first
+	data := PageData{
+		Messages:  chatRoom.GetUserMessages(email),
+		UserEmail: email,
+	}
+
+	// If user is a caregiver, get and display their schedule
+	if chatRoom.IsCaregiver(email) {
+		now := time.Now()
+		weekFromNow := now.AddDate(0, 0, 7)
+		assignments, err := chatRoom.GetCaregiverSchedule(email, now, weekFromNow)
+		if err != nil {
+			log.Printf("Error getting schedule: %v", err)
+		} else {
+			data.Calendar = formatCalendar(assignments)
+		}
+	}
+
+	// Create template with the safeHTML function
+	tmpl, err := template.New("chat").Funcs(template.FuncMap{
+		"safeHTML": func(s string) template.HTML {
+			return template.HTML(s)
+		},
+	}).Parse(htmlTemplate)
+	if err != nil {
+		http.Error(w, "Failed to parse template", http.StatusInternalServerError)
+		return
+	}
+
+	if err := tmpl.Execute(w, data); err != nil {
+		http.Error(w, "Failed to execute template", http.StatusInternalServerError)
+		return
+	}
 }
