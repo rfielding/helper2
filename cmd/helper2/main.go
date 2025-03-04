@@ -479,6 +479,7 @@ func NewApp(apiKey string) (*App, error) {
 	err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS caregivers (
 			email TEXT PRIMARY KEY,
+			name TEXT,
 			experience TEXT,
 			location TEXT,
 			availability TEXT,
@@ -491,6 +492,7 @@ func NewApp(apiKey string) (*App, error) {
 
 		CREATE TABLE IF NOT EXISTS patients (
 			email TEXT PRIMARY KEY,
+			name TEXT,
 			care_needs TEXT,
 			location TEXT,
 			schedule_requirements TEXT,
@@ -569,14 +571,15 @@ func (app *App) StoreCaregiver(c *Caregiver) error {
 		// Update existing caregiver
 		return app.db.Exec(`
 			UPDATE caregivers 
-			SET experience = ?,
+			SET name = ?,
+				experience = ?,
 				location = ?,
 				availability = ?,
 				specializations = ?,
 				rate_expectations = ?,
 				certifications = ?
 			WHERE email = ?
-		`, c.Experience, c.Location, c.Availability,
+		`, c.Name, c.Experience, c.Location, c.Availability,
 			c.Specializations, c.RateExpectations, c.Certifications,
 			c.Email)
 	}
@@ -584,10 +587,10 @@ func (app *App) StoreCaregiver(c *Caregiver) error {
 	// Insert new caregiver
 	return app.db.Exec(`
 		INSERT INTO caregivers (
-			email, experience, location, availability, 
+			email, name, experience, location, availability, 
 			specializations, rate_expectations, certifications, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, c.Email, c.Experience, c.Location, c.Availability,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, c.Email, c.Name, c.Experience, c.Location, c.Availability,
 		c.Specializations, c.RateExpectations, c.Certifications, c.CreatedAt)
 }
 
@@ -614,14 +617,15 @@ func (app *App) StorePatient(p *Patient) error {
 		// Update existing patient
 		return app.db.Exec(`
 			UPDATE patients 
-			SET care_needs = ?,
+			SET name = ?,
+				care_needs = ?,
 				location = ?,
 				schedule_requirements = ?,
 				budget = ?,
 				special_requirements = ?,
 				phone_number = ?
 			WHERE email = ?
-		`, p.CareNeeds, p.Location, p.ScheduleRequirements,
+		`, p.Name, p.CareNeeds, p.Location, p.ScheduleRequirements,
 			p.Budget, p.SpecialRequirements, p.PhoneNumber,
 			p.Email)
 	}
@@ -629,18 +633,11 @@ func (app *App) StorePatient(p *Patient) error {
 	// Insert new patient
 	return app.db.Exec(`
 		INSERT INTO patients (
-			email,
-			care_needs,
-			location,
-			schedule_requirements,
-			budget,
-			special_requirements,
-			phone_number,
-			created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, p.Email, p.CareNeeds, p.Location, p.ScheduleRequirements,
-		p.Budget, p.SpecialRequirements, p.PhoneNumber,
-		p.CreatedAt)
+			email, name, care_needs, location, schedule_requirements,
+			budget, special_requirements, phone_number, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, p.Email, p.Name, p.CareNeeds, p.Location, p.ScheduleRequirements,
+		p.Budget, p.SpecialRequirements, p.PhoneNumber, p.CreatedAt)
 }
 
 func (app *App) CreateMatch(m *Match) error {
@@ -665,6 +662,10 @@ func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 					"email": map[string]interface{}{
 						"type":        "string",
 						"description": "Caregiver's email address",
+					},
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Caregiver's full name",
 					},
 					"experience": map[string]interface{}{
 						"type":        "string",
@@ -691,7 +692,7 @@ func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 						"description": "Professional certifications",
 					},
 				},
-				"required": []string{"email", "location", "rate_expectations"},
+				"required": []string{"email", "name", "location", "rate_expectations"},
 			},
 		},
 		{
@@ -703,6 +704,10 @@ func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 					"email": map[string]interface{}{
 						"type":        "string",
 						"description": "Patient's email address",
+					},
+					"name": map[string]interface{}{
+						"type":        "string",
+						"description": "Patient's full name",
 					},
 					"care_needs": map[string]interface{}{
 						"type":        "string",
@@ -725,7 +730,7 @@ func callOpenAI(req ChatRequest) (*ChatResponse, error) {
 						"description": "Any special requirements",
 					},
 				},
-				"required": []string{"email", "care_needs", "location"},
+				"required": []string{"email", "name", "care_needs", "location"},
 			},
 		},
 		{
@@ -974,8 +979,8 @@ func (app *App) ListPatients() ([]Patient, error) {
 
 	err = result.Iterate(func(r *chai.Row) error {
 		var p Patient
-		if err := r.Scan(&p.Email, &p.CareNeeds, &p.Location, &p.ScheduleRequirements,
-			&p.Budget, &p.SpecialRequirements, &p.PhoneNumber, &p.CreatedAt); err != nil {
+		if err := r.Scan(&p.Email, &p.Name, &p.CareNeeds, &p.Location,
+			&p.ScheduleRequirements, &p.Budget, &p.SpecialRequirements, &p.PhoneNumber, &p.CreatedAt); err != nil {
 			return fmt.Errorf("failed to scan patient: %v", err)
 		}
 		patients = append(patients, p)
@@ -999,8 +1004,8 @@ func (app *App) ListCaregivers() ([]Caregiver, error) {
 
 	err = result.Iterate(func(r *chai.Row) error {
 		var c Caregiver
-		if err := r.Scan(&c.Email, &c.Experience, &c.Location, &c.Availability,
-			&c.Specializations, &c.RateExpectations, &c.Certifications, &c.CreatedAt); err != nil {
+		if err := r.Scan(&c.Email, &c.Name, &c.Experience, &c.Location,
+			&c.Availability, &c.Specializations, &c.RateExpectations, &c.Certifications, &c.CreatedAt); err != nil {
 			return fmt.Errorf("failed to scan caregiver: %v", err)
 		}
 		caregivers = append(caregivers, c)
@@ -1025,7 +1030,7 @@ func (app *App) FindMatchingCaregivers(patientEmail string) ([]Caregiver, error)
 
 	found := false
 	err = result.Iterate(func(r *chai.Row) error {
-		if err := r.Scan(&patient.Email, &patient.CareNeeds, &patient.Location,
+		if err := r.Scan(&patient.Email, &patient.Name, &patient.CareNeeds, &patient.Location,
 			&patient.ScheduleRequirements, &patient.Budget, &patient.SpecialRequirements,
 			&patient.PhoneNumber, &patient.CreatedAt); err != nil {
 			return fmt.Errorf("failed to scan patient: %v", err)
@@ -1059,8 +1064,8 @@ func (app *App) FindMatchingCaregivers(patientEmail string) ([]Caregiver, error)
 	var caregivers []Caregiver
 	err = result.Iterate(func(r *chai.Row) error {
 		var c Caregiver
-		if err := r.Scan(&c.Email, &c.Experience, &c.Location, &c.Availability,
-			&c.Specializations, &c.RateExpectations, &c.Certifications, &c.CreatedAt); err != nil {
+		if err := r.Scan(&c.Email, &c.Name, &c.Experience, &c.Location,
+			&c.Availability, &c.Specializations, &c.RateExpectations, &c.Certifications, &c.CreatedAt); err != nil {
 			return fmt.Errorf("failed to scan caregiver: %v", err)
 		}
 		caregivers = append(caregivers, c)
@@ -1085,9 +1090,9 @@ func (app *App) FindMatchingPatients(caregiverEmail string) ([]Patient, error) {
 
 	found := false
 	err = result.Iterate(func(r *chai.Row) error {
-		if err := r.Scan(&caregiver.Email, &caregiver.Experience, &caregiver.Location,
-			&caregiver.Availability, &caregiver.Specializations, &caregiver.RateExpectations,
-			&caregiver.Certifications, &caregiver.CreatedAt); err != nil {
+		if err := r.Scan(&caregiver.Email, &caregiver.Name, &caregiver.Experience,
+			&caregiver.Location, &caregiver.Availability, &caregiver.Specializations,
+			&caregiver.RateExpectations, &caregiver.Certifications, &caregiver.CreatedAt); err != nil {
 			return fmt.Errorf("failed to scan caregiver: %v", err)
 		}
 		found = true
@@ -1119,8 +1124,8 @@ func (app *App) FindMatchingPatients(caregiverEmail string) ([]Patient, error) {
 	var patients []Patient
 	err = result.Iterate(func(r *chai.Row) error {
 		var p Patient
-		if err := r.Scan(&p.Email, &p.CareNeeds, &p.Location, &p.ScheduleRequirements,
-			&p.Budget, &p.SpecialRequirements, &p.PhoneNumber, &p.CreatedAt); err != nil {
+		if err := r.Scan(&p.Email, &p.Name, &p.CareNeeds, &p.Location,
+			&p.ScheduleRequirements, &p.Budget, &p.SpecialRequirements, &p.PhoneNumber, &p.CreatedAt); err != nil {
 			return fmt.Errorf("failed to scan patient: %v", err)
 		}
 		patients = append(patients, p)
