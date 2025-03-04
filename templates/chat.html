@@ -2,7 +2,7 @@
 <html>
 <head>
     <title>Helper - Connecting Caregivers to Patients</title>
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="./static/css/styles.css">
 </head>
 <body>
     <div class="chat-container">
@@ -32,13 +32,13 @@
             {{end}}
         </div>
 
-        <form method="POST" action="/chat" class="message-form">
+        <form method="POST" action="./chat" class="message-form">
             <input type="hidden" name="email" value="{{.UserEmail}}">
             <input type="text" name="message" placeholder="Type your message..." class="message-input" required>
             <button type="submit" class="send-button">Send</button>
         </form>
     </div>
 
-    <script src="/static/js/app.js"></script>
+    <script src="./static/js/app.js"></script>
 </body>
 </html> 

@@ -222,7 +222,7 @@ const (
             <div class="app-description">Connecting Caregivers to Patients</div>
         </div>
         <div class="user-email">
-            <img src="/static/images/default-avatar.png" alt="User Avatar" class="avatar">
+            <img src="static/images/default-avatar.png" alt="User Avatar" class="avatar">
             Logged in as: {{.UserEmail}}
         </div>
         <div id="messages">
@@ -232,7 +232,7 @@ const (
             </div>
             {{end}}
         </div>
-        <form method="POST" action="/chat" class="message-form">
+        <form method="POST" action="chat" class="message-form">
             <input type="hidden" name="email" value="{{.UserEmail}}">
             <input type="text" name="message" placeholder="Type your message..." class="message-input" required>
             <button type="submit" class="send-button">Send</button>
@@ -884,7 +884,7 @@ func handleChat(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		http.Redirect(w, r, fmt.Sprintf("/?email=%s", url.QueryEscape(userEmail)), http.StatusSeeOther)
+		http.Redirect(w, r, fmt.Sprintf("./?email=%s", url.QueryEscape(userEmail)), http.StatusSeeOther)
 		return
 	}
 
@@ -1371,7 +1371,7 @@ func formatPatientList(patients []Patient) string {
 		}
 
 		sb.WriteString("<li class='match-item'>")
-		sb.WriteString("<img src='/static/images/default-avatar.png' alt='Patient Avatar' class='match-avatar'>")
+		sb.WriteString("<img src='static/images/default-avatar.png' alt='Patient Avatar' class='match-avatar'>")
 		sb.WriteString("<div class='match-details'>")
 		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", p.Name))
 		sb.WriteString(fmt.Sprintf("<span>✉️ Email: %s</span><br>", p.Email))
@@ -1417,7 +1417,7 @@ func formatCaregiverList(caregivers []Caregiver) string {
 		}
 
 		sb.WriteString("<li class='match-item'>")
-		sb.WriteString("<img src='/static/images/default-avatar.png' class='match-avatar'>")
+		sb.WriteString("<img src='static/images/default-avatar.png' class='match-avatar'>")
 		sb.WriteString("<div class='match-details'>")
 		sb.WriteString(fmt.Sprintf("<strong>%s</strong><br>", c.Name))
 		sb.WriteString(fmt.Sprintf("<span>✉️ Email: %s</span><br>", c.Email))
